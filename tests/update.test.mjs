@@ -46,13 +46,15 @@ test("GitHub is asked at most once a day, and every Blueprint shares the answer"
   assert.equal(asked, 2);
 });
 
-test("a failed request also waits a day", async () => {
+test("a failed request is asked again an hour later, and says why", async () => {
   state.shared = {};
   asked = 0;
   globalThis.fetch = async () => { asked++; throw new Error("offline"); };
-  await checkUpdate(T0);
-  await checkUpdate(T0 + 3600000);
+  assert.equal((await checkUpdate(T0)).error, "offline");
+  await checkUpdate(T0 + 30 * 60000);
   assert.equal(asked, 1);
+  await checkUpdate(T0 + 3600000 + 1);
+  assert.equal(asked, 2);
 });
 
 test("turned off, it never asks; turned on, it asks again", async () => {

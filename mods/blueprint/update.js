@@ -13,7 +13,7 @@ import { slashes } from "./store.js";
 export const REPO = "https://github.com/chappse6/herdr-blueprint-app";
 const REMOTE = "https://raw.githubusercontent.com/chappse6/herdr-blueprint-app/master/mods/blueprint/mod.json";
 const KEY = "blueprint.update";
-const DAY = 86400000;
+const DAY = 86400000, HOUR = 3600000;
 
 /** a > b, comparing dotted numbers ("0.10.0" > "0.9.2"); junk is never newer. */
 export function newer(a, b) {
@@ -40,18 +40,22 @@ export async function installedVersion() {
 export async function checkUpdate(now = Date.now()) {
   const known = shared(KEY) ?? {};
   if (known.off || now - (known.checked ?? 0) < DAY) return known;
-  // Marked as checked first, so other Blueprints starting now don't ask too,
-  // and a failed request waits a day like a good one.
+  // Marked as checked first, so other Blueprints starting now don't ask too.
   setShared(KEY, { ...known, checked: now });
+  // Why the last check failed stays in `error`, for whoever wonders why no
+  // button shows (herdr-app's shared state, key blueprint.update).
   try {
     const res = await fetch(REMOTE);
-    if (!res.ok) return { ...known, checked: now };
+    if (!res.ok) throw new Error(`GitHub answered ${res.status}`);
     const latest = (await res.json())?.version ?? null;
-    const next = { ...known, checked: now, latest };
+    const next = { ...known, checked: now, latest, error: null };
     setShared(KEY, next);
     return next;
-  } catch (_) {
-    return { ...known, checked: now };
+  } catch (err) {
+    // A failed request is asked again in an hour, not a day.
+    const next = { ...known, checked: now - DAY + HOUR, error: String(err?.message ?? err) };
+    setShared(KEY, next);
+    return next;
   }
 }
 
