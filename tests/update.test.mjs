@@ -69,7 +69,10 @@ test("turned off, it never asks; turned on, it asks again", async () => {
 });
 
 test("the header shows the update button only for a newer version", () => {
-  assert.ok(updateButton(blueprint("0.3.0", "0.4.0")), "0.4.0 over 0.3.0");
+  const button = updateButton(blueprint("0.3.0", "0.4.0"));
+  assert.ok(button, "0.4.0 over 0.3.0");
+  assert.deepEqual(button.kids, ["Update"], "just the word; the versions are in the tooltip");
+  assert.match(button.props.tooltip, /0\.4\.0.*0\.3\.0/);
   assert.equal(updateButton(blueprint("0.3.0", "0.3.0")), undefined);
   assert.equal(updateButton(blueprint("0.3.0", null)), undefined);
   assert.equal(updateButton(blueprint(null, "0.4.0")), undefined);

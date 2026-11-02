@@ -1139,14 +1139,16 @@ export default class Blueprint extends View {
           .child(this.project ? this.project.topic ?? this.project.name : this.loading ? "" : T.noProject))
         .when(!!this.project && !!this.ctxBranch && !narrow, (el) => el.child(div().flex_none().text_size(11.5).font_family(this.mono).text_color(t.dim).child(this.ctxBranch))))
       // A newer Blueprint: one click asks the agent to update it.
-      .when(!!this.version && newer(this.latest, this.version), (el) => el.child(div().id("bp-update").flex_none().mr(4).px(10).h(24)
-        .rounded_full().flex().items_center().text_size(12).font_medium().bg(alpha(t.accent, 0.16)).text_color(t.accent)
+      // Just the word, small: the version is in the tooltip, and the header's
+      // other controls keep their room.
+      .when(!!this.version && newer(this.latest, this.version), (el) => el.child(div().id("bp-update").flex_none().mr(2).px(8).h(22)
+        .rounded_full().flex().items_center().text_size(11.5).font_medium().bg(alpha(t.accent, 0.16)).text_color(t.accent)
         .cursor_pointer().tooltip(T.updateTip(this.latest, this.version)).hover((s) => s.bg(alpha(t.accent, 0.28)))
         .on_click((_e, cx) => {
           this.askUpdate(cx);
           this.redraw(cx);
         })
-        .child(`↑ ${this.latest}`)))
+        .child(T.update)))
       .child(div().mr(4).child(pill))
       .when(!!G, (el) => el.child(icon("bp-pin", G.pinned ? "pin-on.svg" : "pin.svg", G.pinned ? T.unpinTip : T.pinTip, G.pinned, (cx) => this.togglePin(cx))))
       .when(this.inPanel, (el) => el.child(icon("bp-pane", "pane.svg", T.openPane, false, () => this.openPane())))
