@@ -33,6 +33,7 @@ import { parseFlowchart } from "./mermaid.js";
 import { layout, at } from "./layout.js";
 import { checkoutOf, projectDir, hasDir, readMeta, updateMeta, isNews, load, pruneAll, KEEP_DAYS } from "./store.js";
 import { addButton, removeButton } from "./setup.js";
+import { newer, installedVersion, checkUpdate, setUpdateCheck, updatePrompt } from "./update.js";
 import { text, pickLang, KEY_ALIASES, LANGS } from "./i18n.js";
 
 // Herdr's zoom scales every px an element is given (w, left, text_size...), but
@@ -248,6 +249,20 @@ export default class Blueprint extends View {
       } catch (_) {}
     });
     this.followLang = follow;
+    // A newer Blueprint on GitHub (update.js): looked for now and every 6
+    // hours; the answer is shared, so GitHub is asked at most once a day.
+    this.lookForUpdate = (cx) => cx.spawn(async (cx) => {
+      try {
+        this.version ??= await installedVersion();
+        const { latest } = await checkUpdate();
+        if (latest !== this.latest) {
+          this.latest = latest;
+          this.redraw(cx);
+        }
+      } catch (_) {}
+    });
+    this.lookForUpdate(cx);
+    cx.timer.every(6 * 3600000, (cx) => this.lookForUpdate(cx));
     follow(cx);
     cx.timer.every(60000, (cx) => follow(cx));
     this.size = null; // canvas, logical px
@@ -762,6 +777,14 @@ export default class Blueprint extends View {
     else if (c === "clear") this.selected = null;
     else if (c === "export") this.exportPng(cx);
     else if (c === "add-button" || c === "remove-button") this.setup(c, cx);
+    else if (c === "update") this.askUpdate(cx);
+    else if (c === "update-check-off") {
+      setUpdateCheck(false);
+      this.latest = null;
+    } else if (c === "update-check-on") {
+      setUpdateCheck(true);
+      this.lookForUpdate(cx);
+    }
     else if (/^tab-\d$/.test(c)) this.setTab(Number(c.slice(4)) - 1, cx);
     else if (c.startsWith("select-")) this.selected = c.slice(7);
     else if (c === "edit") this.editKey();
@@ -785,6 +808,27 @@ export default class Blueprint extends View {
       setShared(LANG_KEY, c.slice(5));
       this.useLang(c.slice(5));
     }
+  }
+
+  // The update button: the tab's agent does the update (see update.js), so
+  // it reads the new files before they go in.
+  askUpdate(cx) {
+    if (!this.latest) return;
+    const target = this.pickTarget(this.targetList ?? []);
+    if (!target) {
+      notify({ title: this.T.updateTitle(this.latest), body: this.T.updateNoAgent, level: "info", timeout: 8000 });
+      return;
+    }
+    const text = updatePrompt(this.latest, this.version);
+    cx.spawn(async () => {
+      try {
+        const r = await hc(["send", target.address, text]);
+        if (r.code !== 0) throw new Error((r.stderr || r.stdout || `hc send ${r.code}`).trim());
+        notify({ title: this.T.updateAsked(target.name), body: `${this.version ?? "?"} → ${this.latest}`, level: "success", timeout: 5000 });
+      } catch (err) {
+        notify({ title: this.T.sendFailed, body: String(err?.message ?? err), level: "error" });
+      }
+    });
   }
 
   // The tab bar button: see setup.js.
@@ -1094,6 +1138,15 @@ export default class Blueprint extends View {
         .child(div().min_w(0).truncate().font_semibold().text_color(t.foreground)
           .child(this.project ? this.project.topic ?? this.project.name : this.loading ? "" : T.noProject))
         .when(!!this.project && !!this.ctxBranch && !narrow, (el) => el.child(div().flex_none().text_size(11.5).font_family(this.mono).text_color(t.dim).child(this.ctxBranch))))
+      // A newer Blueprint: one click asks the agent to update it.
+      .when(!!this.version && newer(this.latest, this.version), (el) => el.child(div().id("bp-update").flex_none().mr(4).px(10).h(24)
+        .rounded_full().flex().items_center().text_size(12).font_medium().bg(alpha(t.accent, 0.16)).text_color(t.accent)
+        .cursor_pointer().tooltip(T.updateTip(this.latest, this.version)).hover((s) => s.bg(alpha(t.accent, 0.28)))
+        .on_click((_e, cx) => {
+          this.askUpdate(cx);
+          this.redraw(cx);
+        })
+        .child(`↑ ${this.latest}`)))
       .child(div().mr(4).child(pill))
       .when(!!G, (el) => el.child(icon("bp-pin", G.pinned ? "pin-on.svg" : "pin.svg", G.pinned ? T.unpinTip : T.pinTip, G.pinned, (cx) => this.togglePin(cx))))
       .when(this.inPanel, (el) => el.child(icon("bp-pane", "pane.svg", T.openPane, false, () => this.openPane())))

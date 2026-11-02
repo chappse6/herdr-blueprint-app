@@ -20,6 +20,10 @@ export const KEY_ALIASES = { "ㄷ": "e", "ㄹ": "f", "い": "e", "は": "f" };
 
 const TEXT = {
   en: {
+    updateTip: (latest, cur) => `Blueprint ${latest} is out (you have ${cur}). Click to have your agent update it`,
+    updateTitle: (latest) => `Blueprint ${latest}`,
+    updateAsked: (name) => `Asked ${name} to update Blueprint`,
+    updateNoAgent: "Open an agent in this tab and click again, or ask any agent to update the Blueprint mod",
     newTip: "Ask the agent for another diagram",
     newDiagram: "New diagram",
     newPlaceholder: "What should it draw? e.g. the data model",
@@ -69,6 +73,10 @@ const TEXT = {
     hint: "Click a node to light its flow · E to edit · drag to move · ⌘/Ctrl scroll to zoom",
   },
   ko: {
+    updateTip: (latest, cur) => `Blueprint ${latest}이 나왔어요(지금 ${cur}). 누르면 에이전트가 업데이트해요`,
+    updateTitle: (latest) => `Blueprint ${latest}`,
+    updateAsked: (name) => `${name}에게 Blueprint 업데이트를 맡겼어요`,
+    updateNoAgent: "이 탭에 에이전트를 열고 다시 누르거나, 아무 에이전트에게 Blueprint mod 업데이트를 부탁하세요",
     newTip: "에이전트에게 새 다이어그램 요청",
     newDiagram: "새 다이어그램",
     newPlaceholder: "무엇을 그려 달라고 할까요? 예: 데이터 구조",
@@ -118,6 +126,10 @@ const TEXT = {
     hint: "노드를 누르면 연결된 흐름만 강조돼요 · E 수정 · 드래그로 이동 · ⌘/Ctrl 스크롤로 확대",
   },
   ja: {
+    updateTip: (latest, cur) => `Blueprint ${latest}が出ました（現在 ${cur}）。クリックでエージェントが更新します`,
+    updateTitle: (latest) => `Blueprint ${latest}`,
+    updateAsked: (name) => `${name}にBlueprintの更新を依頼しました`,
+    updateNoAgent: "このタブでエージェントを開いてもう一度押すか、エージェントにBlueprintの更新を頼んでください",
     newTip: "エージェントに新しい図を依頼",
     newDiagram: "新しい図",
     newPlaceholder: "何を描いてもらいますか？ 例: データ構造",
