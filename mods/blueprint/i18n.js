@@ -75,7 +75,7 @@ const TEXT = {
   },
   ko: {
     updateTip: (latest, cur) => `Blueprint ${latest}이 나왔어요(지금 ${cur}). 누르면 에이전트가 업데이트해요`,
-    update: "업데이트",
+    update: "Update",
     updateTitle: (latest) => `Blueprint ${latest}`,
     updateAsked: (name) => `${name}에게 Blueprint 업데이트를 맡겼어요`,
     updateNoAgent: "이 탭에 에이전트를 열고 다시 누르거나, 아무 에이전트에게 Blueprint mod 업데이트를 부탁하세요",
@@ -129,7 +129,7 @@ const TEXT = {
   },
   ja: {
     updateTip: (latest, cur) => `Blueprint ${latest}が出ました（現在 ${cur}）。クリックでエージェントが更新します`,
-    update: "更新",
+    update: "Update",
     updateTitle: (latest) => `Blueprint ${latest}`,
     updateAsked: (name) => `${name}にBlueprintの更新を依頼しました`,
     updateNoAgent: "このタブでエージェントを開いてもう一度押すか、エージェントにBlueprintの更新を頼んでください",
