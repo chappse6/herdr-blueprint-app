@@ -9,22 +9,35 @@
 //
 // layout(g, "LR" | "TB", size(node) -> {w, h}, labelSize(edge) -> {w, h})
 //   -> { nodes: [{node, x, y, w, h}], edges: [{e, segs, label, tip, dir}], bounds }
+//
+// A big diagram takes longer than Herdr lets one call run (a render gets about
+// 50 ms), so the work is also a generator, layoutSteps: it yields between
+// rounds, and the caller runs it a few ms at a time between frames.
 
 const SEP = { LR: 28, TB: 36 }; // between nodes across the main axis
 const DUMMY_SEP = 14;
 const GAP = { LR: 56, TB: 44 }; // between ranks along it
 
 export function layout(g, dir, size, labelSize) {
+  const steps = layoutSteps(g, dir, size, labelSize);
+  for (;;) {
+    const r = steps.next();
+    if (r.done) return r.value;
+  }
+}
+
+export function* layoutSteps(g, dir, size, labelSize) {
   const LR = dir === "LR";
   const ids = [...g.nodes.keys()];
   const edges = g.edges.filter((e) => e.from !== e.to && g.nodes.has(e.from) && g.nodes.has(e.to));
 
   // 1. cycles
   const state = new Map(), back = new Set();
+  const from = new Map(ids.map((id) => [id, []]));
+  for (const e of edges) from.get(e.from).push(e);
   const visit = (v) => {
     state.set(v, 1);
-    for (const e of edges) {
-      if (e.from !== v) continue;
+    for (const e of from.get(v)) {
       const s = state.get(e.to);
       if (s === 1) back.add(e);
       else if (!s) visit(e.to);
@@ -40,7 +53,15 @@ export function layout(g, dir, size, labelSize) {
   const rank = new Map(ids.map((id) => [id, 0]));
   const ranked = [...forward.map((e) => [e.from, e.to]), ...[...back].map((e) => [e.to, e.from])];
   for (let k = 0; k < ids.length; k++) {
-    for (const [u, v] of ranked) if (rank.get(v) < rank.get(u) + 1) rank.set(v, rank.get(u) + 1);
+    let longer = false;
+    for (const [u, v] of ranked) {
+      if (rank.get(v) < rank.get(u) + 1) {
+        rank.set(v, rank.get(u) + 1);
+        longer = true;
+      }
+    }
+    if (!longer) break; // settled: more rounds change nothing
+    yield;
   }
   // Then every box with more edges out than in (a start, or a box that hands
   // off to several) moves down to just above what it leads to: each step down
@@ -48,11 +69,16 @@ export function layout(g, dir, size, labelSize) {
   // children end up. Without it a start feeding the bottom of the drawing sat
   // at the top, with long edges down one side and empty space around them.
   const order = [...ids].sort((a, b) => rank.get(b) - rank.get(a));
+  const succ = new Map(ids.map((id) => [id, []])), preds = new Map(ids.map((id) => [id, 0]));
+  for (const [u, v] of ranked) {
+    succ.get(u).push(v);
+    preds.set(v, preds.get(v) + 1);
+  }
   for (let pass = 0; pass < 4; pass++) {
     let moved = false;
     for (const id of order) {
-      const outs = ranked.filter(([u]) => u === id).map(([, v]) => rank.get(v));
-      const ins = ranked.filter(([, v]) => v === id).length;
+      const outs = succ.get(id).map((v) => rank.get(v));
+      const ins = preds.get(id);
       if (!outs.length || outs.length <= ins) continue;
       const to = Math.min(...outs) - 1;
       if (to > rank.get(id)) {
@@ -103,8 +129,10 @@ export function layout(g, dir, size, labelSize) {
     }
     return c;
   };
+  yield;
   let best = layers.map((l) => [...l]), fewest = crossings();
   for (let it = 0; it < 16 && fewest > 0; it++) {
+    yield;
     const downward = it % 2 === 0;
     for (let k = 1; k < R; k++) {
       const r = downward ? k : R - 1 - k;
@@ -158,25 +186,30 @@ export function layout(g, dir, size, labelSize) {
   // the edges, so the drawing settles instead of drifting apart (pushing a
   // layer one way and re-centring it did, when a long edge crossed a branch).
   const weight = (a, b) => (dummy.has(a) && dummy.has(b) ? 4 : dummy.has(a) || dummy.has(b) ? 2 : 1);
+  // Neighbours with their weights and each layer's spacing stay the same
+  // through the rounds, so they are worked out once.
+  const near = new Map([...up.keys()].map((id) => [id, [...up.get(id), ...down.get(id)].map((n) => [n, weight(id, n)])]));
+  const gaps = layers.map((layer) => layer.map((id, i) => (i ? apart(layer[i - 1], id) : 0)));
   for (let it = 0; it < 24; it++) {
+    yield;
     const downward = it % 2 === 0;
     for (let k = 0; k < R; k++) {
-      const layer = layers[downward ? k : R - 1 - k];
+      const r = downward ? k : R - 1 - k, layer = layers[r];
       const want = [], w = [];
       for (const id of layer) {
         let sum = 0, total = 0;
-        for (const n of [...up.get(id), ...down.get(id)]) {
-          const wt = weight(id, n);
+        for (const [n, wt] of near.get(id)) {
           sum += wt * cross.get(n);
           total += wt;
         }
         want.push(total ? sum / total : cross.get(id));
         w.push(total || 0.01);
       }
-      const x = spaced(want, w, layer.map((id, i) => (i ? apart(layer[i - 1], id) : 0)));
+      const x = spaced(want, w, gaps[r]);
       layer.forEach((id, i) => cross.set(id, x[i]));
     }
   }
+  yield;
   // A one-to-one link (a's only successor is b, b's only predecessor is a)
   // should be straight: line b up with a when its neighbours leave room.
   for (let round = 0; round < 2; round++) {
@@ -219,7 +252,9 @@ export function layout(g, dir, size, labelSize) {
   };
   const shift = (p, d) => (LR ? { x: p.x, y: p.y + d } : { x: p.x + d, y: p.y });
   const out = [];
-  forward.forEach((e, i) => {
+  for (let i = 0; i < forward.length; i++) {
+    if (i % 128 === 127) yield;
+    const e = forward[i];
     const pts = chains[i].map((id) => ({ ...P.get(id) }));
     const u = box(e.from), v = box(e.to);
     const start = exitPort(u, pts[1], LR), end = entryPort(v, LR);
@@ -232,7 +267,7 @@ export function layout(g, dir, size, labelSize) {
     for (let k = 0; k + 1 < pts.length; k++) segs.push(bezier(pts[k], pts[k + 1], tan[k], tan[k + 1]));
     const last = segs[segs.length - 1];
     out.push({ e, segs, label: e.label ? at(segs[0], 0.45) : null, tip: last[3], dir: norm(sub(last[3], last[2])) });
-  });
+  }
 
   let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
   const grow = (x, y, hw = 0, hh = 0) => {
@@ -241,6 +276,7 @@ export function layout(g, dir, size, labelSize) {
   };
   for (const id of ids) grow(P.get(id).x, P.get(id).y, sz.get(id).w / 2 + 10, sz.get(id).h / 2 + 10);
 
+  yield;
   // Back edges: an arc outside everything they span, on the far side.
   for (const e of back) {
     const a = box(e.from), b = box(e.to);
@@ -264,9 +300,11 @@ export function layout(g, dir, size, labelSize) {
   // box side by side would otherwise put theirs on the same line.
   const taken = ids.map((id) => ({ x: P.get(id).x, y: P.get(id).y, w: sz.get(id).w, h: sz.get(id).h }));
   const clear = (c, l) => taken.every((b) => Math.abs(c.x - b.x) * 2 >= l.w + b.w + 4 || Math.abs(c.y - b.y) * 2 >= l.h + b.h + 4);
+  let placed = 0;
   for (const ed of out) {
     const l = ed.label && labels.get(ed.e);
     if (!l) continue;
+    if (++placed % 32 === 0) yield;
     const spots = [ed.label];
     for (const sg of ed.segs) for (const t of [0.45, 0.25, 0.65, 0.85]) spots.push(at(sg, t));
     ed.label = spots.find((c) => clear(c, l)) ?? ed.label;

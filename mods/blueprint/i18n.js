@@ -72,6 +72,11 @@ const TEXT = {
     hintEditing: "Click a node to ask its agent for a change",
     hintNarrow: "Click a node to see its flow",
     hint: "Click a node to light its flow · E to edit · drag to move · ⌘/Ctrl scroll to zoom",
+    refreshTip: "Refresh: read the diagrams again and redraw",
+    laying: "Laying out…",
+    drawFailed: "Couldn't draw this diagram. Refresh to try again",
+    broken: "Blueprint couldn't draw this view. Refresh to try again",
+    partial: "Too big to draw at once here: zoom in to see the rest",
   },
   ko: {
     updateTip: (latest, cur) => `Blueprint ${latest}이 나왔어요(지금 ${cur}). 누르면 에이전트가 업데이트해요`,
@@ -126,6 +131,11 @@ const TEXT = {
     hintEditing: "바꿀 노드를 누르면 담당 에이전트에게 요청해요",
     hintNarrow: "노드를 눌러 흐름 보기",
     hint: "노드를 누르면 연결된 흐름만 강조돼요 · E 수정 · 드래그로 이동 · ⌘/Ctrl 스크롤로 확대",
+    refreshTip: "새로고침: 다이어그램을 다시 읽어 다시 그려요",
+    laying: "배치하는 중…",
+    drawFailed: "이 다이어그램을 그리지 못했어요. 새로고침으로 다시 해 보세요",
+    broken: "Blueprint가 이 화면을 그리지 못했어요. 새로고침으로 다시 해 보세요",
+    partial: "한 번에 다 그리기엔 커서 일부만 보여요. 확대하면 나머지가 보여요",
   },
   ja: {
     updateTip: (latest, cur) => `Blueprint ${latest}が出ました（現在 ${cur}）。クリックでエージェントが更新します`,
@@ -180,6 +190,11 @@ const TEXT = {
     hintEditing: "ノードをクリックすると担当エージェントに依頼します",
     hintNarrow: "ノードをクリックで流れを表示",
     hint: "ノードをクリックで流れを強調 · E 編集 · ドラッグで移動 · ⌘/Ctrlスクロールで拡大",
+    refreshTip: "再読み込み: 図を読み直して描き直す",
+    laying: "レイアウト中…",
+    drawFailed: "この図を描けませんでした。再読み込みでもう一度試せます",
+    broken: "Blueprintはこの画面を描けませんでした。再読み込みでもう一度試せます",
+    partial: "大きすぎて一度に描けません。拡大すると残りが見えます",
   },
 };
 

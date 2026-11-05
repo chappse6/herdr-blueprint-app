@@ -24,13 +24,13 @@
 // Commands (keys.json or `herdr-app do blueprint.<name>`):
 //   fit, zoom-in, zoom-out, zoom-100, export, clear, tab-1..9, select-<node id>,
 //   edit, compose-<node id>, note-<text, _ for spaces>, send, cancel, target-<terminal>,
-//   connect-<terminal>, pin, pane, new
+//   connect-<terminal>, pin, pane, new, refresh
 
 import { View, div, svg, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { theme, settings, agents, panes, spaces, focused, props as given, knownAgents, exec, hc, run, home, notify, readTextFile, watchFolder, nextCommand, shared, setShared, window as host } from "herdr";
 import { parseFlowchart } from "./mermaid.js";
-import { layout, at } from "./layout.js";
+import { layoutSteps, at } from "./layout.js";
 import { checkoutOf, projectDir, hasDir, readMeta, updateMeta, isNews, load, pruneAll, KEEP_DAYS } from "./store.js";
 import { addButton, removeButton } from "./setup.js";
 import { newer, installedVersion, checkUpdate, setUpdateCheck, updatePrompt } from "./update.js";
@@ -43,25 +43,33 @@ import { text, pickLang, KEY_ALIASES, LANGS } from "./i18n.js";
 // the slow part of a render), and kept for the handlers in between.
 const zoomOf = (s) => (Number(s?.zoom) > 0 ? Number(s.zoom) : 1);
 
-// PathBuilder with every coordinate, stroke width and dash in layout px.
-function zoomed(b, k) {
-  const n = (v) => (typeof v === "number" ? v * k : v);
-  const w = (p) => ({
-    move_to: (x, y) => w(p.move_to(n(x), n(y))),
-    line_to: (x, y) => w(p.line_to(n(x), n(y))),
-    curve_to: (...a) => w(p.curve_to(...a.map(n))),
-    cubic_bezier_to: (...a) => w(p.cubic_bezier_to(...a.map(n))),
-    arc_to: (rx, ry, rot, large, sweep, x, y) => w(p.arc_to(n(rx), n(ry), rot, large, sweep, n(x), n(y))),
-    add_polygon: (pts, closed) => w(p.add_polygon(pts.map(([x, y]) => [n(x), n(y)]), closed)),
-    close: () => w(p.close()),
-    dash_array: (values) => w(p.dash_array(values.map((v) => v * k))),
-    build: () => p.build(),
-  });
-  return w(b);
+// PathBuilder with every coordinate, stroke width and dash in layout px. One
+// object per path, not a wrapper per call: a big diagram makes thousands.
+class ScaledPath {
+  constructor(b, k) {
+    this.b = b;
+    this.k = k;
+  }
+  move_to(x, y) { this.b = this.b.move_to(x * this.k, y * this.k); return this; }
+  line_to(x, y) { this.b = this.b.line_to(x * this.k, y * this.k); return this; }
+  cubic_bezier_to(x, y, ax, ay, bx, by) {
+    const k = this.k;
+    this.b = this.b.cubic_bezier_to(x * k, y * k, ax * k, ay * k, bx * k, by * k);
+    return this;
+  }
+  arc_to(rx, ry, rot, large, sweep, x, y) {
+    const k = this.k;
+    this.b = this.b.arc_to(rx * k, ry * k, rot, large, sweep, x * k, y * k);
+    return this;
+  }
+  add_polygon(pts, closed) { this.b = this.b.add_polygon(pts.map(([x, y]) => [x * this.k, y * this.k]), closed); return this; }
+  close() { this.b = this.b.close(); return this; }
+  dash_array(values) { this.b = this.b.dash_array(values.map((v) => v * this.k)); return this; }
+  build() { return this.b.build(); }
 }
 const zpaths = (k) => ({
-  fill: () => zoomed(PathBuilder.fill(), k),
-  stroke: (width) => zoomed(PathBuilder.stroke(width * k), k),
+  fill: () => new ScaledPath(PathBuilder.fill(), k),
+  stroke: (width) => new ScaledPath(PathBuilder.stroke(width * k), k),
 });
 
 const MOD = "blueprint";
@@ -83,6 +91,13 @@ const FLOW_GAP = 6; // px between spots, at least
 const FLOW_REST = 360; // ms after each run
 const RUNS = 8; // dots at most, one per run
 const FLOW_BUDGET = 40; // spots for all runs together: many runs get fewer each
+// Herdr cuts off a render that runs about 50 ms ("interrupted": a red bar over
+// the last good frame). So nothing slow happens in a render: layouts are made
+// between frames, SLICE_MS at a time, and a render stops adding to the drawing
+// once it has used its budget (less after a render was cut off anyway).
+const SLICE_MS = 12;
+const BUDGET_MS = [26, 16, 10];
+const MEASURE_MAX = 160; // text boxes measured per render, at most
 const APPS = { "claude-code": "Claude Code", codex: "Codex", pi: "Pi", gemini: "Gemini", opencode: "OpenCode", grok: "Grok", amp: "Amp" };
 // Program keys of coding agents. A Claude Code that reports no status still
 // shows as program "claude" with agent: false, so the key decides; knownAgents()
@@ -227,8 +242,14 @@ export default class Blueprint extends View {
     this.dirs = {}; // per diagram file: the direction last drawn
     this.measured = {}; // "n:<file@rev>:<id>" / "e:<file@rev>:<index>" -> {w, h} at 100%
     this.vers = {}; // per file@rev, bumped when its text is measured
+    this.whole = new Set(); // file@revs whose text is all measured
     this.revs = 0; // revs are unique across files and projects, so sizes never mix
-    this.cache = new Map();
+    this.cache = new Map(); // layouts: "<file@rev>:<dir>:<sizes version>" -> layout
+    this.prev = {}; // per diagram file: the layout last drawn, shown while its next one is made
+    this.failed = new Set(); // layouts that threw: not tried again until a refresh
+    this.job = null; // the layout being made between frames
+    this.lite = 0; // renders Herdr cut off lately: each one lowers the budget
+    this.paths = {}; // the grid and the edges, built once per look and view
     this.project = null; // { path, dir, meta, name }
     this.useLang("en");
     // The language picked with blueprint.lang-<en|ko|ja> (kept in shared
@@ -296,8 +317,12 @@ export default class Blueprint extends View {
     });
     cx.timer.every(30000, (cx) => cx.notify()); // "N min ago"
     // Which project: render notes the tab's terminal folder; this picks it up
-    // (git and file reads are async, which a render can't wait for).
-    cx.timer.every(700, (cx) => this.syncProject(cx));
+    // (git and file reads are async, which a render can't wait for). And a
+    // layout the shown diagram still needs, should no redraw have asked for it.
+    cx.timer.every(700, (cx) => {
+      this.syncProject(cx);
+      this.prepare(cx);
+    });
     cx.spawn(async () => {
       try {
         await pruneAll();
@@ -314,11 +339,6 @@ export default class Blueprint extends View {
     });
   }
 
-  // The host sometimes drops a render ("interrupted"); the pane then keeps the
-  // last good frame under an error bar until a later render goes through. It
-  // happens most right after a reload, a resize or a new tab. A dropped render
-  // leaves nothing behind, so a render marks itself done only at its end, and
-  // until one does, keep asking (a few times, backing off).
   useLang(lang) {
     this.lang = lang;
     this.T = text(lang);
@@ -402,7 +422,30 @@ export default class Blueprint extends View {
     this.dirs = {};
     this.measured = {};
     this.vers = {};
+    this.whole.clear();
     this.cache.clear();
+    this.prev = {};
+    this.failed.clear();
+    this.job = null;
+    this.paths = {};
+  }
+
+  // The refresh button: nothing kept from before (sizes, layouts, paths, the
+  // lowered budget), the project looked up and its files read and parsed
+  // again. Where the person was looking stays.
+  refresh(cx) {
+    const views = { ...this.views }, dirs = this.dirs, graphs = this.graphs.map((d) => ({ ...d, src: null }));
+    const p = this.project, tab = this.ctxTab;
+    this.forget();
+    Object.assign(this, { graphs, views: { ...views }, dirs, measuredFont: null, lite: 0, ctxPending: true });
+    cx.spawn(async (cx) => {
+      try {
+        await this.reload(cx);
+      } catch (_) {}
+      // A new parse starts from fit; not this one (unless the tab or project changed meanwhile).
+      if (this.project === p && this.ctxTab === tab) Object.assign(this.views, views);
+      this.redraw(cx);
+    });
   }
 
   // Changes project.json: here at once, on disk merged into what is there now
@@ -583,10 +626,15 @@ export default class Blueprint extends View {
   }
 
   redraw(cx) {
+    this.prepare(cx);
     cx.notify();
     this.heal(cx);
   }
 
+  // A render Herdr drops leaves the pane on its last good frame under an
+  // error bar until a later render goes through. A dropped render leaves
+  // nothing behind, so a render marks itself done only at its end, and until
+  // one does, keep asking (a few times, backing off).
   heal(cx) {
     this.wanted = (this.wanted ?? 0) + 1;
     if (this.healing) return;
@@ -618,26 +666,121 @@ export default class Blueprint extends View {
     return this.graphs[this.tab]?.key ?? "";
   }
 
-  labelBox(i, n) {
-    return this.measured[`n:${this.mkey(i)}:${n.id}`] ?? {
+  // mk is mkey(i): sizes are looked up by file version, so a layout being made
+  // for one keeps its sizes when the list of diagrams changes meanwhile.
+  labelBox(mk, n) {
+    return this.measured[`n:${mk}:${n.id}`] ?? {
       w: Math.max(estimate(n.title, TITLE), estimate(n.sub, SUB)),
       h: TITLE * 1.3 + (n.sub ? SUB * 1.3 + 2 : 0),
     };
   }
 
-  edgeLabelBox(i, e) {
-    const k = this.graphs[i].g.edges.indexOf(e);
-    return this.measured[`e:${this.mkey(i)}:${k}`] ?? { w: estimate(e.label, LABEL) + 10, h: LABEL * 1.4 + 4 };
+  edgeLabelBox(mk, g, e) {
+    g.edgeIndex ??= new Map(g.edges.map((x, k) => [x, k]));
+    return this.measured[`e:${mk}:${g.edgeIndex.get(e)}`] ?? { w: estimate(e.label, LABEL) + 10, h: LABEL * 1.4 + 4 };
   }
 
-  layoutFor(i, dir) {
-    const key = `${this.mkey(i)}:${dir}:${this.vers[this.mkey(i)] ?? 0}`;
-    if (!this.cache.has(key)) {
-      if (this.cache.size > 24) this.cache.clear();
-      const g = this.graphs[i].g;
-      this.cache.set(key, layout(g, dir, (n) => nodeSize(n, this.labelBox(i, n)), (e) => this.edgeLabelBox(i, e)));
+  // Text of diagram i not measured yet. Once it all is, that is kept (whole):
+  // every render asks.
+  missing(i) {
+    const mk = this.mkey(i), g = this.graphs[i].g;
+    if (this.whole.has(mk)) return false;
+    const some = [...g.nodes.keys()].some((id) => !this.measured[`n:${mk}:${id}`])
+      || g.edges.some((e, k) => e.label && !this.measured[`e:${mk}:${k}`]);
+    if (!some) this.whole.add(mk);
+    return some;
+  }
+
+  lkey(i, dir) {
+    const mk = this.mkey(i);
+    return `${mk}:${dir}:${this.vers[mk] ?? 0}`;
+  }
+
+  // Made already, or null: layouts are made by prepare, never in a render.
+  laid(i, dir) {
+    return this.cache.get(this.lkey(i, dir)) ?? null;
+  }
+
+  // The next layout to make: the shown diagram's (the Mermaid direction, then
+  // the other to compare), else one of another tab whose text is all measured,
+  // so switching to it finds it drawn. Those wait while the cache is fullish:
+  // filling it past its limit empties it, the shown ones too.
+  nextLayout() {
+    const order = [this.tab, ...this.graphs.keys()].filter((i, k, a) => a.indexOf(i) === k && this.graphs[i]);
+    for (const i of order) {
+      if (i !== this.tab && (this.cache.size >= 16 || this.missing(i))) continue;
+      const pref = this.graphs[i].g.dir;
+      for (const dir of [pref, pref === "LR" ? "TB" : "LR"]) {
+        const key = this.lkey(i, dir);
+        if (!this.cache.has(key) && !this.failed.has(key)) return { i, dir, key };
+      }
     }
-    return this.cache.get(key);
+    return null;
+  }
+
+  // Makes the layouts nextLayout names, between frames and SLICE_MS at a time.
+  // While the shown diagram's text is still being measured, its last drawing
+  // stays up rather than it being laid out twice (for a while: a size that
+  // never comes doesn't hold it back).
+  prepare(cx) {
+    if (this.job || !this.graphs[this.tab]) return;
+    const next = this.nextLayout();
+    if (!next) return;
+    const { i, dir, key } = next, d = this.graphs[i];
+    if (i === this.tab && this.prev[d.key] && this.missing(i)) {
+      this.waiting ??= Date.now();
+      if (Date.now() - this.waiting < 1500) {
+        if (!this.waitCheck) {
+          this.waitCheck = true;
+          cx.timer.after(1600, (cx) => {
+            this.waitCheck = false;
+            this.redraw(cx);
+          });
+        }
+        return;
+      }
+    }
+    this.waiting = null;
+    const mk = this.mkey(i), g = d.g;
+    const job = { key, mk, g, shown: i === this.tab, since: Date.now(), steps: layoutSteps(g, dir, (n) => nodeSize(n, this.labelBox(mk, n)), (e) => this.edgeLabelBox(mk, g, e)) };
+    this.job = job;
+    cx.timer.after(1, (cx) => this.pump(cx, job));
+  }
+
+  pump(cx, job) {
+    if (this.job !== job) return; // dropped meanwhile: another project, a refresh
+    if (job.g !== this.graph && this.nextLayout()?.i === this.tab) {
+      // The diagram on screen needs one: it goes first.
+      this.job = null;
+      return this.redraw(cx);
+    }
+    const t0 = Date.now();
+    try {
+      for (;;) {
+        const r = job.steps.next();
+        if (r.done) {
+          const L = Object.assign(r.value, { g: job.g, key: job.key, mk: job.mk });
+          // What a render looks up for it, worked out here rather than there.
+          this.reach(L);
+          this.scope(L);
+          if (this.cache.size > 24) this.cache.clear();
+          this.cache.set(job.key, L);
+          break;
+        }
+        if (Date.now() - t0 >= SLICE_MS) {
+          // Taking a while: the canvas says so (until now it was just empty).
+          if (job.shown && !job.noted && Date.now() - job.since > 150) {
+            job.noted = true;
+            cx.notify();
+          }
+          return void cx.timer.after(1, (cx) => this.pump(cx, job));
+        }
+      }
+    } catch (_) {
+      this.failed.add(job.key); // the last good drawing stays, or the canvas says so
+    }
+    this.job = null;
+    this.redraw(cx);
   }
 
   fitView(L) {
@@ -647,50 +790,71 @@ export default class Blueprint extends View {
     return { z, x: (W - gw * z) / 2 - b.minX * z, y: (H - gh * z) / 2 - b.minY * z };
   }
 
-  // The Mermaid direction, unless the other one fits the pane clearly bigger.
-  direction(i) {
-    const pref = this.graphs[i].g.dir, other = pref === "LR" ? "TB" : "LR";
-    if (!this.size) return pref;
-    const a = this.fitView(this.layoutFor(i, pref)).z, b = this.fitView(this.layoutFor(i, other)).z;
-    return b > a * 1.2 ? other : pref;
-  }
-
+  // The layout on screen and where it is seen from, or null before the first
+  // one is made. The Mermaid direction, unless the other one fits the pane
+  // clearly bigger. Until both are made (say its text was just measured), the
+  // last drawing of this file stays, so it doesn't flip one way and back.
   current() {
-    const dir = this.direction(this.tab);
-    if (this.dirs[this.vkey] !== dir) {
-      this.dirs[this.vkey] = dir;
-      delete this.views[this.vkey]; // a new shape: start from fit
+    const i = this.tab, d = this.graphs[i];
+    if (!d) return null;
+    const pref = d.g.dir, other = pref === "LR" ? "TB" : "LR";
+    const a = this.laid(i, pref), b = this.laid(i, other);
+    const made = (L, dir) => L || this.failed.has(this.lkey(i, dir));
+    let L = a ?? b, dir = a ? pref : other;
+    if (a && b && this.size && this.fitView(b).z > this.fitView(a).z * 1.2) [L, dir] = [b, other];
+    if (!L || (this.prev[d.key] && !(made(a, pref) && made(b, other)))) {
+      if (!this.prev[d.key]) return null;
+      ({ L, dir } = this.prev[d.key]);
+    } else {
+      if (this.dirs[d.key] !== dir) {
+        this.dirs[d.key] = dir;
+        delete this.views[d.key]; // a new shape: start from fit
+      }
+      this.prev[d.key] = { L, dir };
     }
-    const L = this.layoutFor(this.tab, dir);
-    return { L, dir, v: this.views[this.vkey] ?? this.fitView(L) };
+    return { L, dir, v: this.views[d.key] ?? this.fitView(L) };
   }
 
-  // A node's whole flow: everything upstream and downstream of it.
-  flow(id) {
+  // A node's whole flow: everything upstream and downstream of it. Kept with
+  // the layout, like the work in progress (scope): a render only looks it up.
+  flow(L, id) {
+    L.flows ??= new Map();
+    if (L.flows.has(id)) return L.flows.get(id);
+    const g = L.g ?? this.graph, from = new Map(), to = new Map();
+    for (const e of g.edges) {
+      if (!from.has(e.from)) from.set(e.from, []);
+      if (!to.has(e.to)) to.set(e.to, []);
+      from.get(e.from).push(e);
+      to.get(e.to).push(e);
+    }
     const nodes = new Set([id]), edges = new Set();
     for (const fwd of [true, false]) {
       const queue = [id], seen = new Set([id]);
       while (queue.length) {
         const v = queue.shift();
-        for (const e of this.graph.edges) {
-          const [a, b] = fwd ? [e.from, e.to] : [e.to, e.from];
-          if (a !== v) continue;
+        for (const e of (fwd ? from : to).get(v) ?? []) {
+          const b = fwd ? e.to : e.from;
           edges.add(e);
           nodes.add(b);
           if (!seen.has(b)) seen.add(b), queue.push(b);
         }
       }
     }
-    return { nodes, edges };
+    L.flows.set(id, { nodes, edges });
+    return L.flows.get(id);
   }
 
   // The work in progress, as edges and runs. Yellow edges: inside the work
   // (both ends in progress) and, for each place where work begins, one edge
   // leading in, from a finished node when there is one. A run follows yellow
   // edges from where work begins to where it ends; a fork makes a run per
-  // branch. Each run is one dot. Back edges are not followed.
+  // branch. Each run is one dot. Back edges are not followed. Worked out once
+  // per layout (its own version of the diagram), not per render.
   scope(L) {
-    const g = this.graph;
+    return (L.work ??= this.findWork(L, L.g ?? this.graph));
+  }
+
+  findWork(L, g) {
     const fwd = L.edges.filter((ed) => !ed.back);
     const busy = (id) => inProgress(g.nodes.get(id));
     const inner = fwd.filter((ed) => busy(ed.e.from) && busy(ed.e.to));
@@ -773,7 +937,7 @@ export default class Blueprint extends View {
     if (c === "fit") this.views[this.vkey] = null;
     else if (c === "zoom-in") this.zoomCenter(1.25);
     else if (c === "zoom-out") this.zoomCenter(0.8);
-    else if (c === "zoom-100") this.graphs.length && this.size && this.zoomCenter(1 / this.current().v.z);
+    else if (c === "zoom-100") this.size && this.current() && this.zoomCenter(1 / this.current().v.z);
     else if (c === "clear") this.selected = null;
     else if (c === "export") this.exportPng(cx);
     else if (c === "add-button" || c === "remove-button") this.setup(c, cx);
@@ -800,7 +964,7 @@ export default class Blueprint extends View {
     else if (c === "pin") this.togglePin(cx);
     else if (c === "new") this.openCreate();
     else if (c === "pane") this.openPane();
-    else if (c === "reload") cx.spawn(async (cx) => this.reload(cx));
+    else if (c === "refresh" || c === "reload") this.refresh(cx);
     else if (c === "lang-auto") {
       setShared(LANG_KEY, null);
       this.followLang?.(cx);
@@ -872,8 +1036,9 @@ export default class Blueprint extends View {
   // The request box covers the bottom of the canvas; in a low pane that can be
   // the box it is about. Then the drawing moves up until the box shows above.
   keepAbove(id) {
-    if (!this.size || !this.graphs.length) return;
-    const { L, v } = this.current();
+    const cur = this.size && this.current();
+    if (!cur) return;
+    const { L, v } = cur;
     const item = L.nodes.find((x) => x.node.id === id);
     if (!item) return;
     const bottom = (item.y + item.h / 2) * v.z + v.y, limit = this.size.height - COMPOSE_H - 16;
@@ -955,8 +1120,9 @@ export default class Blueprint extends View {
   }
 
   zoomAt(f, px, py) {
-    if (!this.graphs.length) return;
-    const { v } = this.current();
+    const cur = this.size && this.current();
+    if (!cur) return;
+    const { v } = cur;
     const z = clamp(v.z * f), k = z / v.z;
     this.views[this.vkey] = { z, x: px - (px - v.x) * k, y: py - (py - v.y) * k };
   }
@@ -1016,10 +1182,35 @@ export default class Blueprint extends View {
 
   // --- drawing -----------------------------------------------------------
 
+  // A render Herdr cut off never reaches its end, so the next one still finds
+  // inRender set: the budget goes down for a while (BUDGET_MS). One that throws
+  // shows the frame with a refresh button instead of Herdr's red error bar.
   render(cx) {
-    const el = this.renderBody(cx);
+    const now = Date.now();
+    if (this.inRender) {
+      this.lite = Math.min(BUDGET_MS.length - 1, this.lite + 1);
+      this.liteAt = now;
+    } else if (this.lite && now - this.liteAt > 20000) this.lite = 0;
+    this.inRender = true;
+    this.deadline = now + BUDGET_MS[this.lite];
+    this.cut = false;
+    let el;
+    try {
+      el = this.renderBody(cx);
+    } catch (err) {
+      el = this.broken(err);
+    }
+    this.inRender = false;
     this.rendered = this.wanted ?? 0;
     return el;
+  }
+
+  broken(err) {
+    const t = theme();
+    return v_flex().id("bp-root").size_full().bg(t.background).items_center().justify_center().gap(10).p(16)
+      .child(div().text_size(12.5).text_color(t.muted).child(this.T.broken))
+      .child(div().max_w(420).text_size(11).text_color(t.dim).child(String(err?.message ?? err)))
+      .child(this.refreshButton(t));
   }
 
   renderBody(cx) {
@@ -1113,11 +1304,9 @@ export default class Blueprint extends View {
       .children(this.measuring());
   }
 
-  // Title, the agent, and three quiet icon buttons (pin, open as pane, edit)
-  // drawn in the text colour, with a tooltip each.
-  header(t, pal, G, narrow) {
-    const T = this.T;
-    const icon = (id, file, tip, on, onClick) => div().id(id).flex_none().size(28).flex().items_center().justify_center()
+  // A quiet icon button, drawn in the text colour, with a tooltip.
+  iconButton(t, id, file, tip, on, onClick) {
+    return div().id(id).flex_none().size(28).flex().items_center().justify_center()
       .rounded(6).cursor_pointer().tooltip(tip).text_color(on ? t.accent : t.muted)
       .when(on, (el) => el.bg(alpha(t.accent, 0.16)))
       .when(!on, (el) => el.hover((s) => s.bg(t.hover).text_color(t.foreground)))
@@ -1126,6 +1315,16 @@ export default class Blueprint extends View {
         this.redraw(cx);
       })
       .child(svg(`mods/blueprint/${file}`).size(15));
+  }
+
+  refreshButton(t) {
+    return this.iconButton(t, "bp-refresh", "refresh.svg", this.T.refreshTip, false, (cx) => this.refresh(cx));
+  }
+
+  // Title, the agent, and four icon buttons (refresh, pin, open as pane, edit).
+  header(t, pal, G, narrow) {
+    const T = this.T;
+    const icon = (...a) => this.iconButton(t, ...a);
     // The agent with the same status marks as the Agents list in the sidebar.
     const a = this.pickTarget(this.targetList);
     const pill = h_flex().id("bp-agent").flex_none().gap(6).px(10).h(24).rounded_full().items_center().bg(t.raised)
@@ -1150,6 +1349,7 @@ export default class Blueprint extends View {
         })
         .child(T.update)))
       .child(div().mr(4).child(pill))
+      .child(this.refreshButton(t))
       .when(!!G, (el) => el.child(icon("bp-pin", G.pinned ? "pin-on.svg" : "pin.svg", G.pinned ? T.unpinTip : T.pinTip, G.pinned, (cx) => this.togglePin(cx))))
       .when(this.inPanel, (el) => el.child(icon("bp-pane", "pane.svg", T.openPane, false, () => this.openPane())))
       .when(!!G, (el) => el.child(icon("bp-edit", "edit.svg", T.editTip, this.editing, () => this.editKey())));
@@ -1216,8 +1416,9 @@ export default class Blueprint extends View {
         this.redraw(cx);
       })
       .on_scroll_wheel((e, cx) => {
-        if (!this.graphs.length) return;
-        const v = this.current().v, Z = this.zoom;
+        const cur = this.size && this.current();
+        if (!cur) return;
+        const v = cur.v, Z = this.zoom;
         const r = e.local_position ?? (e.bounds ? { x: e.position.x - e.bounds.x, y: e.position.y - e.bounds.y } : null);
         const p = r ? { x: r.x / Z, y: r.y / Z } : { x: this.size.width / 2, y: this.size.height / 2 };
         if (e.modifiers.control || e.modifiers.platform) this.zoomAt(Math.exp(e.delta.y * 0.003), p.x, p.y);
@@ -1225,8 +1426,9 @@ export default class Blueprint extends View {
         this.redraw(cx);
       })
       .on_mouse_down("left", (e) => {
-        if (!this.graphs.length) return;
-        this.drag = { x: e.position.x, y: e.position.y, v: { ...this.current().v }, moved: false };
+        const cur = this.size && this.current();
+        if (!cur) return;
+        this.drag = { x: e.position.x, y: e.position.y, v: { ...cur.v }, moved: false };
       })
       .on_mouse_move((e, cx) => {
         const d = this.drag;
@@ -1251,7 +1453,26 @@ export default class Blueprint extends View {
       if (this.loading) return el;
       return el.child(this.emptyCard(t)).when(this.compose?.kind === "new", (el) => el.child(this.composer(t)));
     }
-    return el.children(this.drawing(t, pal))
+    // A diagram that doesn't draw (a bug, an odd file): the last drawing of it
+    // that did stays, else the canvas says so. Refresh tries it all again.
+    let cur = this.current(), els = null, error = null;
+    for (let tries = 0; cur && !els && tries < 2; tries++) {
+      try {
+        els = this.drawing(t, pal, cur);
+      } catch (err) {
+        error = err;
+        this.drop(cur.L);
+        cur = this.current();
+      }
+    }
+    if (!els) {
+      const failed = error || ["LR", "TB"].every((dir) => this.failed.has(this.lkey(this.tab, dir)));
+      if (!failed && !this.job?.noted) return el;
+      return el.child(div().absolute().inset_0().flex().flex_col().items_center().justify_center().gap(8)
+        .child(div().text_size(12).text_color(t.dim).child(failed ? this.T.drawFailed : this.T.laying))
+        .when(!!failed, (el) => el.child(this.refreshButton(t))));
+    }
+    return el.children(els)
       .when(this.editing, (el) => el.child(h_flex().absolute().left(12).top(12).gap(6).px(10).h(26).items_center().rounded(6)
         .bg(alpha(t.accent, 0.16)).border(1).border_color(alpha(t.accent, 0.5)).text_size(12).text_color(t.accent)
         .child(div().font_semibold().child(this.T.editMode))
@@ -1350,78 +1571,107 @@ export default class Blueprint extends View {
         .child(button("bp-send", this.sending ? this.T.sending : this.T.send, true, ready, (cx) => this.send(cx))));
   }
 
-  drawing(t, pal) {
-    const { L, v } = this.current();
+  // What a render draws, nothing laid out here: the layout and what it lights
+  // are kept with it, the grid and the edges are built once per look and view
+  // (a hover or a status change redraws without rebuilding them), and only
+  // what is on screen is built. Past the render's budget the drawing stops
+  // growing, boxes first, and the footer says so.
+  drawing(t, pal, cur = this.current()) {
+    const { L, v } = cur, g = L.g ?? this.graph;
     const { z } = v, W = this.size.width, H = this.size.height;
     const X = (x) => x * z + v.x, Y = (y) => y * z + v.y;
-    const sel = this.selected && this.graph.nodes.has(this.selected) ? this.flow(this.selected) : null;
+    const sel = this.selected && g.nodes.has(this.selected) ? this.flow(L, this.selected) : null;
     const layer = (path, color) => div().absolute().left(0).top(0).w(W).h(H).child(window.paint_path(path, color));
-    const els = [];
+    const ZPath = zpaths(this.zoom);
+    L.id ??= (this.layouts = (this.layouts ?? 0) + 1);
+    // On screen, in drawing units, with room for strokes, badges and arrows.
+    const m = 24 / z, x0 = -v.x / z - m, x1 = (W - v.x) / z + m, y0 = -v.y / z - m, y1 = (H - v.y) / z + m;
+    const seen = (b) => b.x1 >= x0 && b.x0 <= x1 && b.y1 >= y0 && b.y0 <= y1;
+    const reach = this.reach(L);
+    let cut = false, count = 0;
+    const late = () => cut || (++count % 8 === 0 && (cut = Date.now() > (this.deadline ?? Infinity)));
+
+    const nodes = [];
+    L.nodes.forEach((item, k) => {
+      if (seen(reach.nodes[k]) && !late()) nodes.push(...this.node(item, t, pal, sel, X, Y, z, ZPath));
+    });
 
     // Dot grid over the whole canvas, moving with the drawing.
     let s = 20 * z;
     while (s < 12) s *= 2;
     while (s > 40) s /= 2;
     const dot = 1.6, ox = ((v.x % s) + s) % s, oy = ((v.y % s) + s) % s;
-    const ZPath = zpaths(this.zoom);
-    let grid = ZPath.stroke(dot).dash_array([dot, s - dot]);
-    for (let y = oy; y < H; y += s) grid = grid.move_to(ox - dot / 2, y).line_to(W + s, y);
-    els.push(layer(grid.build(), alpha(t.foreground, 0.11)));
+    const gridKey = [s, ox, oy, W, H, this.zoom].join(":");
+    if (this.paths.grid?.key !== gridKey) {
+      let grid = ZPath.stroke(dot).dash_array([dot, s - dot]);
+      for (let y = oy; y < H; y += s) grid = grid.move_to(ox - dot / 2, y).line_to(W + s, y);
+      this.paths.grid = { key: gridKey, path: grid.build() };
+    }
+    const els = [layer(this.paths.grid.path, alpha(t.foreground, 0.11))];
 
     // Edges: one stroke path per look and one arrow path per colour, not per edge.
-    const lines = new Map(), arrows = new Map();
-    const lineGroup = (key, color, width, dash) => {
-      if (!lines.has(key)) {
-        let b = ZPath.stroke(width);
-        if (dash) b = b.dash_array(dash.map((d) => d * Math.max(0.6, z)));
-        lines.set(key, { b, color });
-      }
-      return lines.get(key);
-    };
-    const arrowGroup = (color) => {
-      if (!arrows.has(color)) arrows.set(color, { b: ZPath.fill(), color });
-      return arrows.get(color);
-    };
     const head = Math.max(4, 7 * Math.sqrt(z));
-    const tips = new Set();
     const work = this.scope(L);
-    const into = work.yellow;
-    // Dots only while this pane has focus: a running dot repaints the window
-    // on every tick, so the default is colour alone.
-    const runs = this.exporting || !this.paneFocused ? [] : work.runs.filter((path) => !sel || path.every((ed) => sel.edges.has(ed.e)));
-    for (const ed of L.edges) {
-      const lit = !sel || sel.edges.has(ed.e);
-      const active = into.has(ed.e) && lit;
-      const dashed = ed.e.style === "dashed" || active;
-      const look = active ? "active" : !lit ? "dim" : sel ? "lit" : "plain";
-      // A picked node's flow is drawn heavier, the yellow work edges included.
-      const strong = !!sel && lit;
-      const color = { active: alpha(pal.active, strong ? 0.95 : 0.45), dim: alpha(t.muted, 0.18), lit: t.foreground, plain: alpha(t.muted, 0.75) }[look];
-      const width = strong ? 2 : active ? 1.6 : 1.25;
-      const gr = lineGroup(`${look}:${dashed}:${width}`, color, width, dashed ? [4, 4] : null);
-      const pts = ed.segs.map((sg) => sg.map((p) => ({ x: X(p.x), y: Y(p.y) })));
-      const end = pts[pts.length - 1][3], d = ed.dir;
-      const stop = ed.e.arrow ? { x: end.x - d.x * head * 0.8, y: end.y - d.y * head * 0.8 } : end;
-      gr.b = gr.b.move_to(pts[0][0].x, pts[0][0].y);
-      pts.forEach((p, k) => {
-        const to = k === pts.length - 1 ? stop : p[3];
-        gr.b = gr.b.cubic_bezier_to(to.x, to.y, p[1].x, p[1].y, p[2].x, p[2].y);
+    const edgeKey = [L.id, v.x, v.y, z, W, H, this.zoom, sel ? this.selected : "", t.muted, t.foreground, pal.active].join(":");
+    if (this.paths.edges?.key !== edgeKey) {
+      const lines = new Map(), arrows = new Map();
+      const lineGroup = (key, color, width, dash) => {
+        if (!lines.has(key)) {
+          let b = ZPath.stroke(width);
+          if (dash) b = b.dash_array(dash.map((d) => d * Math.max(0.6, z)));
+          lines.set(key, { b, color });
+        }
+        return lines.get(key);
+      };
+      const arrowGroup = (color) => {
+        if (!arrows.has(color)) arrows.set(color, { b: ZPath.fill(), color });
+        return arrows.get(color);
+      };
+      const colors = {
+        active: [alpha(pal.active, 0.45), alpha(pal.active, 0.95)], dim: alpha(t.muted, 0.18), lit: t.foreground,
+        plain: alpha(t.muted, 0.75), plainArrow: alpha(t.muted, 0.9),
+      };
+      const tips = new Set();
+      L.edges.forEach((ed, k) => {
+        if (!seen(reach.edges[k]) || late()) return;
+        const lit = !sel || sel.edges.has(ed.e);
+        const active = work.yellow.has(ed.e) && lit;
+        const dashed = ed.e.style === "dashed" || active;
+        const look = active ? "active" : !lit ? "dim" : sel ? "lit" : "plain";
+        // A picked node's flow is drawn heavier, the yellow work edges included.
+        const strong = !!sel && lit;
+        const color = look === "active" ? colors.active[strong ? 1 : 0] : colors[look];
+        const width = strong ? 2 : active ? 1.6 : 1.25;
+        const gr = lineGroup(`${look}:${dashed}:${width}`, color, width, dashed ? [4, 4] : null);
+        const segs = ed.segs, last = segs[segs.length - 1][3], d = ed.dir;
+        const end = { x: X(last.x), y: Y(last.y) };
+        const stop = ed.e.arrow ? { x: end.x - d.x * head * 0.8, y: end.y - d.y * head * 0.8 } : end;
+        gr.b = gr.b.move_to(X(segs[0][0].x), Y(segs[0][0].y));
+        segs.forEach(([, c1, c2, p], i) => {
+          const to = i === segs.length - 1 ? stop : { x: X(p.x), y: Y(p.y) };
+          gr.b = gr.b.cubic_bezier_to(to.x, to.y, X(c1.x), Y(c1.y), X(c2.x), Y(c2.y));
+        });
+        // Two identical arrow heads in one fill path cancel out (even-odd), so one per tip.
+        const tip = `${Math.round(end.x)}:${Math.round(end.y)}`;
+        if (ed.e.arrow && !tips.has(tip)) {
+          tips.add(tip);
+          const side = { x: -d.y, y: d.x }, w = head * 0.55;
+          const a = arrowGroup(active ? pal.active : look === "plain" ? colors.plainArrow : color);
+          a.b = a.b.add_polygon([[end.x, end.y], [end.x - d.x * head + side.x * w, end.y - d.y * head + side.y * w], [end.x - d.x * head - side.x * w, end.y - d.y * head - side.y * w]], true);
+        }
       });
-      // Two identical arrow heads in one fill path cancel out (even-odd), so one per tip.
-      const tip = `${Math.round(end.x)}:${Math.round(end.y)}`;
-      if (ed.e.arrow && !tips.has(tip)) {
-        tips.add(tip);
-        const side = { x: -d.y, y: d.x }, w = head * 0.55;
-        const a = arrowGroup(active ? pal.active : look === "plain" ? alpha(t.muted, 0.9) : color);
-        a.b = a.b.add_polygon([[end.x, end.y], [end.x - d.x * head + side.x * w, end.y - d.y * head + side.y * w], [end.x - d.x * head - side.x * w, end.y - d.y * head - side.y * w]], true);
-      }
-    }
-    for (const gr of lines.values()) els.push(layer(gr.b.build(), gr.color));
-    for (const gr of arrows.values()) els.push(layer(gr.b.build(), gr.color));
+      const groups = [...lines.values(), ...arrows.values()].map((gr) => ({ path: gr.b.build(), color: gr.color }));
+      // A drawing cut short is built again next time.
+      this.paths.edges = cut ? null : { key: edgeKey, groups };
+      for (const gr of groups) els.push(layer(gr.path, gr.color));
+    } else for (const gr of this.paths.edges.groups) els.push(layer(gr.path, gr.color));
 
     // A dot per run, all leaving together on one cycle, so runs that share a
     // start overlap there (built once) and part at the fork. Across a node a
     // dot goes straight from where it came in to where it leaves, under the box.
+    // Dots only while this pane has focus: a running dot repaints the window
+    // on every tick, so the default is colour alone.
+    const runs = this.exporting || !this.paneFocused || cut ? [] : work.runs.filter((path) => !sel || path.every((ed) => sel.edges.has(ed.e)));
     const tracks = runs.map((path) => {
       const pts = [];
       path.forEach((ed, i) => {
@@ -1442,7 +1692,7 @@ export default class Blueprint extends View {
         for (let d = step / 2, k = 0, tick = 0; d < l.len - head * 1.2; d += step, tick++) {
           while (k < l.pts.length - 1 && l.pts[k + 1].d < d) k++;
           const p = l.pts[k], key = `${Math.round(p.x)}:${Math.round(p.y)}:${tick}`;
-          if (l.pts[k + 1]?.cross || built.has(key)) continue;
+          if (l.pts[k + 1]?.cross || built.has(key) || p.x < -6 || p.x > W + 6 || p.y < -7 || p.y > H + 7) continue;
           built.add(key);
           const frames = Array.from({ length: cycle }, (_, i) => (i === tick ? "●" : ""));
           els.push(div().absolute().left(p.x - 6).top(p.y - 7).w(12).h(14).flex().items_center().justify_center()
@@ -1452,18 +1702,41 @@ export default class Blueprint extends View {
     }
 
     // Edge labels, on a patch of canvas so the line stops behind them.
-    L.edges.forEach((ed) => {
-      if (!ed.label) return;
-      const m = this.edgeLabelBox(this.tab, ed.e);
+    const mk = L.mk ?? this.mkey(this.tab);
+    for (const ed of L.edges) {
+      if (!ed.label) continue;
+      const m = this.edgeLabelBox(mk, g, ed.e);
+      const box = { x0: ed.label.x - m.w / 2, x1: ed.label.x + m.w / 2, y0: ed.label.y - m.h / 2, y1: ed.label.y + m.h / 2 };
+      if (!seen(box) || late()) continue;
       const lit = !sel || sel.edges.has(ed.e);
       els.push(div().absolute().left(X(ed.label.x) - (m.w * z) / 2).top(Y(ed.label.y) - (m.h * z) / 2).w(m.w * z).h(m.h * z)
         .flex().items_center().justify_center().rounded(4 * z).bg(t.canvas)
         .text_size(LABEL * z).text_color(lit ? t.muted : alpha(t.muted, 0.3)).child(ed.e.label));
+    }
+
+    this.cut = cut;
+    return els.concat(nodes);
+  }
+
+  // Where each box and edge reaches, in drawing units: what is on screen is
+  // looked up, not worked out, each render.
+  reach(L) {
+    return (L.reach ??= {
+      nodes: L.nodes.map((it) => ({ x0: it.x - it.w / 2, x1: it.x + it.w / 2, y0: it.y - it.h / 2, y1: it.y + it.h / 2 })),
+      edges: L.edges.map((ed) => {
+        const pts = ed.segs.flat();
+        return { x0: Math.min(...pts.map((p) => p.x)), x1: Math.max(...pts.map((p) => p.x)), y0: Math.min(...pts.map((p) => p.y)), y1: Math.max(...pts.map((p) => p.y)) };
+      }),
     });
+  }
 
-    for (const item of L.nodes) els.push(...this.node(item, t, pal, sel, X, Y, z));
-
-    return els;
+  // A layout that threw while drawn: not drawn, nor made, again until a refresh.
+  drop(L) {
+    if (L.key) {
+      this.failed.add(L.key);
+      this.cache.delete(L.key);
+    }
+    for (const [file, p] of Object.entries(this.prev)) if (p.L === L) delete this.prev[file];
   }
 
   // Text measured at 100%, invisible, so node sizes follow the real text: the
@@ -1476,30 +1749,30 @@ export default class Blueprint extends View {
       // Another font: every size is stale.
       this.measuredFont = mono;
       this.measured = {};
+      this.whole.clear();
       for (const k of Object.keys(this.vers)) this.vers[k]++;
     }
-    const missing = (i) => [...this.graphs[i].g.nodes.keys()].some((id) => !this.measured[`n:${this.mkey(i)}:${id}`])
-      || this.graphs[i].g.edges.some((e, k) => e.label && !this.measured[`e:${this.mkey(i)}:${k}`]);
     if (!this.graphs.length) return els;
     const order = [this.tab, ...this.graphs.keys()].filter((i, k, a) => a.indexOf(i) === k);
-    const next = order.find(missing);
+    const next = order.find((i) => this.missing(i));
     if (next === undefined) return els;
-    [next].forEach((i) => {
-      const { g } = this.graphs[i], mk = this.mkey(i);
-      for (const n of g.nodes.values()) {
-        const key = `n:${mk}:${n.id}`;
-        if (this.measured[key]) continue;
-        els.push(v_flex().id(`bp-m-${key}`).absolute().left(0).top(0).opacity(0).items_center().gap(2)
-          .child(div().whitespace_nowrap().text_size(TITLE).font_semibold().child(n.title))
-          .when(!!n.sub, (el) => el.child(div().whitespace_nowrap().text_size(SUB).font_family(mono).child(n.sub)))
-          .on_size_change((s, cx) => this.measure(key, mk, s, cx)));
-      }
-      g.edges.forEach((e, k) => {
-        const key = `e:${mk}:${k}`;
-        if (!e.label || this.measured[key]) return;
-        els.push(div().id(`bp-m-${key}`).absolute().left(0).top(0).opacity(0).px(5).py(1).whitespace_nowrap().text_size(LABEL)
-          .child(e.label).on_size_change((s, cx) => this.measure(key, mk, s, cx)));
-      });
+    // A big diagram is measured over a few renders, each in its budget.
+    const room = () => els.length < MEASURE_MAX && Date.now() < (this.deadline ?? Infinity) + 8;
+    const { g } = this.graphs[next], mk = this.mkey(next);
+    for (const n of g.nodes.values()) {
+      const key = `n:${mk}:${n.id}`;
+      if (this.measured[key]) continue;
+      if (!room()) return els;
+      els.push(v_flex().id(`bp-m-${key}`).absolute().left(0).top(0).opacity(0).items_center().gap(2)
+        .child(div().whitespace_nowrap().text_size(TITLE).font_semibold().child(n.title))
+        .when(!!n.sub, (el) => el.child(div().whitespace_nowrap().text_size(SUB).font_family(mono).child(n.sub)))
+        .on_size_change((s, cx) => this.measure(key, mk, s, cx)));
+    }
+    g.edges.forEach((e, k) => {
+      const key = `e:${mk}:${k}`;
+      if (!e.label || this.measured[key] || !room()) return;
+      els.push(div().id(`bp-m-${key}`).absolute().left(0).top(0).opacity(0).px(5).py(1).whitespace_nowrap().text_size(LABEL)
+        .child(e.label).on_size_change((s, cx) => this.measure(key, mk, s, cx)));
     });
     return els;
   }
@@ -1520,8 +1793,7 @@ export default class Blueprint extends View {
     });
   }
 
-  node(item, t, pal, sel, X, Y, z) {
-    const ZPath = zpaths(this.zoom);
+  node(item, t, pal, sel, X, Y, z, ZPath) {
     const n = item.node, w = item.w * z, h = item.h * z;
     const left = X(item.x) - w / 2, top = Y(item.y) - h / 2;
     const lit = !sel || sel.nodes.has(n.id);
@@ -1550,17 +1822,27 @@ export default class Blueprint extends View {
         this.redraw(cx);
       });
     const full = (path, color) => div().absolute().left(0).top(0).w(w).h(h).child(window.paint_path(path, color));
+    // A diamond's or cylinder's outline is the same path for every render at
+    // this size, so it is built once (building one costs several boxes).
+    const shape = (part, make) => {
+      const cache = (this.paths.shapes ??= new Map()), key = `${n.shape}:${part}:${w}:${h}:${bw}:${z}:${this.zoom}`;
+      if (!cache.has(key)) {
+        if (cache.size > 4000) cache.clear();
+        cache.set(key, make().build());
+      }
+      return cache.get(key);
+    };
     const i = bw / 2;
     if (n.shape === "diamond") {
       const poly = [[w / 2, i], [w - i, h / 2], [w / 2, h - i], [i, h / 2]];
-      box = box.child(full(ZPath.fill().add_polygon(poly, true).build(), bg))
-        .child(full(ZPath.stroke(bw).add_polygon(poly, true).build(), stroke));
+      box = box.child(full(shape("fill", () => ZPath.fill().add_polygon(poly, true)), bg))
+        .child(full(shape("line", () => ZPath.stroke(bw).add_polygon(poly, true)), stroke));
     } else if (n.shape === "cylinder") {
       const rx = w / 2 - i, ry = 7 * z;
       const body = (b) => b.move_to(i, ry).arc_to(rx, ry - i, 0, false, true, w - i, ry).line_to(w - i, h - ry)
         .arc_to(rx, ry - i, 0, false, true, i, h - ry).close();
-      const outline = body(ZPath.stroke(bw)).move_to(i, ry).arc_to(rx, ry - i, 0, false, false, w - i, ry);
-      box = box.child(full(body(ZPath.fill()).build(), bg)).child(full(outline.build(), stroke)).pt(ry);
+      const outline = () => body(ZPath.stroke(bw)).move_to(i, ry).arc_to(rx, ry - i, 0, false, false, w - i, ry);
+      box = box.child(full(shape("fill", () => body(ZPath.fill())), bg)).child(full(shape("line", outline), stroke)).pt(ry);
     } else {
       const r = n.shape === "stadium" ? h / 2 : n.shape === "circle" ? w / 2 : n.shape === "round" ? 14 * z : 8 * z;
       box = box.bg(bg).border(bw).border_color(stroke).rounded(r);
@@ -1606,7 +1888,7 @@ export default class Blueprint extends View {
   footer(t, narrow) {
     const n = this.selected ? this.graph.nodes.get(this.selected) : null;
     const has = this.graphs.length > 0;
-    const { v } = this.size && has ? this.current() : { v: { z: 1 } };
+    const { v } = (this.size && has && this.current()) || { v: { z: 1 } };
     const fitted = !this.views[this.vkey];
     const button = (id, label, onClick, extra = (el) => el) =>
       extra(div().id(id).h(26).px(10).flex().items_center().rounded(6).border(1).border_color(t.border).text_size(12)
@@ -1631,7 +1913,7 @@ export default class Blueprint extends View {
         .when(!!n.ref, (el) => el.child(div().min_w(0).truncate().text_size(11).font_family(mono).text_color(t.accent).child(n.ref)))
         .when(!narrow && !this.editing, (el) => el.child(div().flex_none().text_size(11).text_color(t.dim).child(this.T.hintEdit)))
       : div().flex_1().min_w(0).truncate().text_size(12).text_color(t.muted)
-        .child(this.editing ? this.T.hintEditing : narrow ? this.T.hintNarrow : this.T.hint);
+        .child(this.cut ? this.T.partial : this.editing ? this.T.hintEditing : narrow ? this.T.hintNarrow : this.T.hint);
     return h_flex().h(FOOTER_H).flex_none().px(12).gap(6).items_center().border_t(1).border_color(t.border)
       .child(info)
       .when(has, (el) => el

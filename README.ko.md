@@ -118,7 +118,7 @@ Blueprint 버튼(설치 참고)을 누르면 지금 보고 있는 탭을 따라�
 
 테스트는 Node 24 이상에서 Herdr 모듈을 가짜로 바꿔 돌립니다: `node --import ./tests/stubs.mjs --test 'tests/*.test.mjs'`. PR마다 GitHub Actions에서도 돕니다.
 
-`scripts/sync.sh`는 `mods/blueprint`를 Herdr 앱 폴더로 복사합니다(심볼릭 링크로 연결한 mod는 Herdr가 다시 읽지 않습니다). `--watch`를 붙이면 바뀔 때마다 복사합니다. `scripts/demo/`는 이 페이지의 그림을 실제 세션으로 다시 만듭니다. 따로 띄운 Herdr 창에서 `start.sh`로 시작하고, 조작하는 동안 `record.py`로 녹화한 뒤 `make.py clips.json`을 실행합니다. `RECIPE.md`에는 에이전트가 처음부터 다시 만들 때 쓸 설명이 있습니다.
+`scripts/sync.sh`는 `mods/blueprint`를 Herdr 앱 폴더로 복사합니다(심볼릭 링크로 연결한 mod는 Herdr가 다시 읽지 않습니다). `--watch`를 붙이면 바뀔 때마다 복사합니다. `scripts/demo/`는 이 페이지의 그림을 실제 세션으로 다시 만듭니다. 따로 띄운 Herdr 창에서 `start.sh`로 시작하고, 조작하는 동안 `record.py`로 녹화한 뒤 `make.py clips.json`을 실행합니다. `scripts/bench.sh`는 상자 100~500개짜리 다이어그램을 만들어 Herdr 엔진에서 한 번 그리고 걸린 시간을 보여 줍니다. Herdr는 50ms쯤 넘는 렌더를 끊기 때문에, 큰 다이어그램이 그 안에 그려지는지 여기서 봅니다. `RECIPE.md`에는 에이전트가 처음부터 다시 만들 때 쓸 설명이 있습니다.
 
 ## 라이선스
 

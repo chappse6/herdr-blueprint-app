@@ -25,12 +25,14 @@ function make(k) {
   const bp = Object.create(Blueprint.prototype);
   const g = parseFlowchart(SRC);
   Object.assign(bp, {
-    graphs: [{ key: "k", rev: 1, g }], tab: 0, measured: {}, vers: {}, cache: new Map(), views: {}, dirs: {},
+    graphs: [{ key: "k", rev: 1, g }], tab: 0, measured: {}, vers: {}, whole: new Set(), cache: new Map(), views: {}, dirs: {},
+    prev: {}, failed: new Set(), paths: {}, lite: 0,
     size: null, selected: null, hovered: null, exporting: false, paneFocused: false, compose: null, editing: false,
     drag: null, mono: "mono", T: {}, loading: false, width: 0,
   });
-  const cx = {};
-  bp.redraw = () => {};
+  // Layouts are made between frames, on timers: here those run at once.
+  const cx = { timer: { after: (_ms, f) => f(cx) } };
+  bp.redraw = (cx) => cx.timer && bp.prepare(cx);
   bp.canvas(T, PAL, cx).handlers.on_size_change(REAL, cx);
   return bp;
 }
