@@ -104,8 +104,10 @@ async function apply(dir, path, change) {
 }
 
 // What changed in a project folder is news when it is a diagram or the topic;
-// the rest (project.json and whatever saving it leaves) is bookkeeping.
-export const isNews = (f) => /\.mmd$|topic\.txt$/.test(f);
+// the rest (project.json and whatever saving it leaves) is bookkeeping. Herdr
+// sends the folder itself when too much changed to list: anything may have
+// (and so may a path not spelled the way dir is).
+export const isNews = (f, dir) => /\.mmd$|topic\.txt$/.test(f) || !slashes(f).startsWith(`${dir}/`);
 
 // *.mmd in the folder, read, each with when its text last changed: the time
 // recorded with the same text, else now (a new or changed file).

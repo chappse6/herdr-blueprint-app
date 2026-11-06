@@ -223,6 +223,7 @@ ${diagramRules(lang)}
 
 const EMPTY = { nodes: new Map(), edges: [], title: null, dir: "LR" };
 const ASK_WAIT = 10 * 60000; // how long an unanswered draw request holds the list back
+const POLL_MS = 5000; // the project's files read again, should the watch miss a save
 
 export default class Blueprint extends View {
   init(props, cx) {
@@ -323,6 +324,7 @@ export default class Blueprint extends View {
       this.syncProject(cx);
       this.prepare(cx);
     });
+    cx.timer.every(POLL_MS, (cx) => this.poll(cx));
     cx.spawn(async () => {
       try {
         await pruneAll();
@@ -444,6 +446,7 @@ export default class Blueprint extends View {
       } catch (_) {}
       // A new parse starts from fit; not this one (unless the tab or project changed meanwhile).
       if (this.project === p && this.ctxTab === tab) Object.assign(this.views, views);
+      if (this.project?.known) this.watch(cx, this.project); // ended on an error: again
       this.redraw(cx);
     });
   }
@@ -474,13 +477,29 @@ export default class Blueprint extends View {
             if (this.project?.dir === p.dir) await this.reload(cx);
             return;
           }
-          if (changed.some(isNews)) await this.reload(cx);
+          if (changed.some((f) => isNews(f, p.dir))) await this.reload(cx);
           else await this.rereadMeta(p, cx);
         }
       } catch (_) {
       } finally {
         if (this.watching === key) this.watching = null;
       }
+    });
+  }
+
+  // Every POLL_MS: a save the watch didn't report (Herdr pairs watchFolder with
+  // a timer, as its Files mod does) shows up anyway, and a watch that ended on
+  // an error starts again.
+  poll(cx) {
+    const p = this.project;
+    if (!p?.known || this.syncing || this.polling) return;
+    this.watch(cx, p);
+    this.polling = true;
+    cx.spawn(async (cx) => {
+      try {
+        await this.reload(cx, true);
+      } catch (_) {}
+      this.polling = false;
     });
   }
 
@@ -494,14 +513,16 @@ export default class Blueprint extends View {
     this.redraw(cx);
   }
 
-  async reload(cx) {
+  // quiet: read on the timer, so nothing happens unless a file changed.
+  async reload(cx, quiet = false) {
     const p = this.project;
     if (!p) return;
     const items = await load(p.dir, p.meta);
     // The project's big topic, if the agent wrote one (first line of topic.txt).
-    const topic = (await readTextFile(`${p.dir}/topic.txt`))?.split("\n")[0].trim();
+    const topic = (await readTextFile(`${p.dir}/topic.txt`))?.split("\n")[0].trim() || null;
     if (p !== this.project) return;
-    p.topic = topic || null;
+    if (quiet && topic === p.topic && items.length === this.graphs.length && items.every((f) => this.graphs.some((d) => d.key === f.file && d.src === f.src))) return;
+    p.topic = topic;
     this.setDiagrams(items);
     this.markSeen(cx);
     this.redraw(cx);

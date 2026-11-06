@@ -51,6 +51,14 @@ export const theme = () => ({}), agents = list, panes = list, spaces = list, foc
 export const exec = async () => ({ code: 0, stdout: "", stderr: "" }), run = none, home = () => "/tmp", appHome = () => "/tmp";
 // hc send is recorded in state.sent; shared state lives in state.shared; files in state.files.
 export const hc = async (args) => ((state.sent ??= []).push(args), { code: 0, stdout: "", stderr: "" });
-export const notify = (n) => ((state.notes ??= []).push(n), null), writeTextFile = async () => {}, watchFolder = none, nextCommand = none;
+export const notify = (n) => ((state.notes ??= []).push(n), null), writeTextFile = async () => {}, nextCommand = none;
+// watchFolder hands out state.batches one at a time (each folder asked for is
+// kept in state.watched); with none left the watch ends, as on an error.
+export const watchFolder = async (dir) => {
+  (state.watched ??= []).push(dir);
+  const batch = state.batches?.shift();
+  if (!batch) throw new Error("no more changes");
+  return batch;
+};
 export const readTextFile = async (path) => state.files?.[path] ?? "";
 export const shared = (key) => state.shared?.[key], setShared = (key, value) => ((state.shared ??= {})[key] = value, null), window = none;
