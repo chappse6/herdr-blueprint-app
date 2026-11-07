@@ -80,7 +80,7 @@ herdr-app do blueprint.add-button
 
 ### 7. 탭바에서 열기
 
-Blueprint 버튼(설치 참고)을 누르면 지금 보고 있는 탭을 따라가는 사이드 패널로 열리고, pane 아이콘을 누르면 그 탭 안의 pane으로 옮겨집니다. 다이어그램을 7일 넘게 두려면 고정하세요.
+Blueprint 버튼(설치 참고)을 누르면 지금 보고 있는 탭을 따라가는 사이드 패널로 열리고, pane 아이콘을 누르면 그 탭 안의 pane으로 옮겨집니다. 다이어그램을 7일 넘게 두려면 고정하세요. 다이어그램 탭을 다른 탭 위로 끌어다 놓으면 그 자리로 옮겨집니다. 보고 있는 탭의 ×나 가운데 버튼 클릭으로 탭을 닫을 수 있고, 에이전트가 그 파일을 고치면 다시 열립니다.
 
 <p align="center"><img src="docs/media/panel.png" width="720" alt="왼쪽에 Claude Code, 오른쪽에 Files, Changes 옆 Blueprint 버튼으로 연 사이드 패널. POST /logout 탭이 고정돼 있습니다."></p>
 
@@ -88,7 +88,7 @@ Blueprint 버튼(설치 참고)을 누르면 지금 보고 있는 탭을 따라�
 
 - **에이전트.** Claude Code, Codex, Grok, Gemini, OpenCode 등 Herdr가 아는 에이전트. 요청은 `hc send`로 에이전트 터미널에 입력합니다.
 - **언어.** 영어, 한국어, 일본어. Claude Code의 `language` 설정을 따르고, 없으면 영어입니다(Codex, Grok 등은 Blueprint가 읽는 언어 설정이 없습니다). `herdr-app do blueprint.lang-ko`(또는 `lang-en`, `lang-ja`)로 고정할 수 있고, `lang-auto`로 다시 Claude Code 설정을 따릅니다.
-- **저장 위치.** Herdr 앱 폴더의 `data/blueprint/projects/<이름>-<해시>/`. 다이어그램 하나가 `.mmd` 파일 하나이고, 고정과 연결한 에이전트는 `project.json`에 적힙니다. 프로젝트는 터미널 폴더의 git 최상위 폴더 기준이라 worktree마다 따로입니다.
+- **저장 위치.** Herdr 앱 폴더의 `data/blueprint/projects/<이름>-<해시>/`. 다이어그램 하나가 `.mmd` 파일 하나이고, 고정, 탭 순서, 닫은 탭, 연결한 에이전트는 `project.json`에 적힙니다. 프로젝트는 터미널 폴더의 git 최상위 폴더 기준이라 worktree마다 따로입니다.
 - **실행하는 것.** 프로젝트를 찾는 `git rev-parse`, 에이전트에게 입력하는 `hc send`, macOS에서 PNG를 만드는 `sips`와 `osascript`. 언어 설정 때문에 `~/.claude/settings.json`을 읽습니다. 네트워크는 아래 업데이트 확인에만 씁니다.
 - **업데이트.** 하루 한 번 GitHub에 있는 이 저장소의 `mods/blueprint/mod.json`에서 버전을 읽습니다. 설치한 것보다 새 버전이면 헤더에 작은 "Update" 버튼이 나타나고(버전은 툴팁에), 누르면 그 탭의 에이전트에게 mod 업데이트와 바뀐 점 설명을 맡깁니다. `herdr-app do blueprint.update-check-off`로 끌 수 있습니다.
 - **지원 환경.** 셸, Python, Node 없이 macOS, Linux, Windows에서 돌도록 만들었습니다. 실제로 돌려 본 곳은 macOS(Herdr 0.1.10)뿐이고 Windows와 Linux는 아직 확인하지 못했습니다. PNG 내보내기는 macOS에서만 됩니다.

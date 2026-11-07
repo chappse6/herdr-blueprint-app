@@ -11,7 +11,11 @@ export function el(kind = "div") {
         if (name === "when") return args[0] ? args[1](self) : self;
         if (name === "child") { t.kids.push(args[0]); return self; }
         if (name === "children") { t.kids.push(...args[0]); return self; }
-        if (name.startsWith("on_")) { t.handlers[name] = args[args.length - 1]; return self; }
+        if (name.startsWith("on_")) {
+          t.handlers[name] = args[args.length - 1];
+          if (args.length > 1) t.handlers[`${name}:${args[0]}`] = args[args.length - 1]; // per mouse button
+          return self;
+        }
         t.props[name] = args.length === 1 ? args[0] : args;
         return self;
       };
@@ -49,9 +53,9 @@ export const settings = () => state.settings;
 const none = () => null, list = () => [];
 export const theme = () => ({}), agents = list, panes = list, spaces = list, focused = none, props = () => ({}), knownAgents = list;
 export const exec = async () => ({ code: 0, stdout: "", stderr: "" }), run = none, home = () => "/tmp", appHome = () => "/tmp";
-// hc send is recorded in state.sent; shared state lives in state.shared; files in state.files.
+// hc send is recorded in state.sent; shared state lives in state.shared; files (read and written) in state.files.
 export const hc = async (args) => ((state.sent ??= []).push(args), { code: 0, stdout: "", stderr: "" });
-export const notify = (n) => ((state.notes ??= []).push(n), null), writeTextFile = async () => {}, nextCommand = none;
+export const notify = (n) => ((state.notes ??= []).push(n), null), writeTextFile = async (path, text) => void ((state.files ??= {})[path] = text), nextCommand = none;
 // watchFolder hands out state.batches one at a time (each folder asked for is
 // kept in state.watched); with none left the watch ends, as on an error.
 export const watchFolder = async (dir) => {

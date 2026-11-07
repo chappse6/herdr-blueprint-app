@@ -88,7 +88,7 @@ Agents are told to draw only what exists. Here Claude Code drew the two real Pos
 
 ### 7. In the tab bar
 
-The Blueprint button (see Install) opens Blueprint as a side panel that follows the tab you are on, and its pane icon moves it into the tab as a pane. Pin a diagram to keep it past 7 days.
+The Blueprint button (see Install) opens Blueprint as a side panel that follows the tab you are on, and its pane icon moves it into the tab as a pane. Pin a diagram to keep it past 7 days. Drag a diagram tab onto another to move it there. × on the shown tab, or a middle click, closes one; it comes back when the agent changes that file.
 
 <p align="center"><img src="docs/media/panel.png" width="720" alt="Herdr with Claude Code on the left and Blueprint as a side panel on the right, opened from the Blueprint button next to Files and Changes; the POST /logout tab is pinned."></p>
 
@@ -96,7 +96,7 @@ The Blueprint button (see Install) opens Blueprint as a side panel that follows 
 
 - **Agents.** Claude Code, Codex, Grok, Gemini, OpenCode and other agents Herdr knows. Requests are typed into their terminal with `hc send`.
 - **Language.** English, Korean or Japanese. It follows Claude Code's `language` setting and is English otherwise (Codex, Grok and others have no such setting it reads). Pick one for good with `herdr-app do blueprint.lang-ko` (or `lang-en`, `lang-ja`; `lang-auto` to follow Claude Code again).
-- **Where diagrams live.** `data/blueprint/projects/<name>-<hash>/` in Herdr's app folder: one `.mmd` file per diagram and a `project.json` for pins and the connected agent. A project is the git top level of the terminal's folder, so every worktree is its own.
+- **Where diagrams live.** `data/blueprint/projects/<name>-<hash>/` in Herdr's app folder: one `.mmd` file per diagram and a `project.json` for pins, tab order, closed tabs and the connected agent. A project is the git top level of the terminal's folder, so every worktree is its own.
 - **What it runs.** `git rev-parse` to find the project, `hc send` to reach the agent, and `sips` and `osascript` for PNG export on macOS. It reads `~/.claude/settings.json` for the language. The only network use is the update check below.
 - **Updates.** Once a day Blueprint reads the version in this repository's `mods/blueprint/mod.json` on GitHub. When it is newer than yours, a small Update button shows in the header (the version is in its tooltip); a click asks the tab's agent to update the mod and tell you what changed. `herdr-app do blueprint.update-check-off` stops the check.
 - **Platforms.** Written for macOS, Linux and Windows with no shell, Python or Node. It has been run on macOS (Herdr 0.1.10); Windows and Linux are not tested yet. PNG export is macOS only.

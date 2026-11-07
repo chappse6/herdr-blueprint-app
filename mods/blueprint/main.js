@@ -24,14 +24,14 @@
 // Commands (keys.json or `herdr-app do blueprint.<name>`):
 //   fit, zoom-in, zoom-out, zoom-100, export, clear, tab-1..9, select-<node id>,
 //   edit, compose-<node id>, note-<text, _ for spaces>, send, cancel, target-<terminal>,
-//   connect-<terminal>, pin, pane, new, refresh
+//   connect-<terminal>, pin, pane, new, refresh, close-tab
 
 import { View, div, svg, PathBuilder } from "gpui-kit";
 import { v_flex, h_flex, InputState, Input } from "gpui-base";
 import { theme, settings, agents, panes, spaces, focused, props as given, knownAgents, exec, hc, run, home, notify, readTextFile, watchFolder, nextCommand, shared, setShared, window as host } from "herdr";
 import { parseFlowchart } from "./mermaid.js";
 import { layoutSteps, at } from "./layout.js";
-import { checkoutOf, projectDir, hasDir, readMeta, updateMeta, isNews, load, pruneAll, KEEP_DAYS } from "./store.js";
+import { checkoutOf, projectDir, hasDir, readMeta, updateMeta, isNews, load, pruneAll, ordered, moved, KEEP_DAYS } from "./store.js";
 import { addButton, removeButton } from "./setup.js";
 import { newer, installedVersion, checkUpdate, setUpdateCheck, updatePrompt } from "./update.js";
 import { text, pickLang, KEY_ALIASES, LANGS } from "./i18n.js";
@@ -419,6 +419,7 @@ export default class Blueprint extends View {
   // Another project: sizes, layouts and views of the last one's files don't
   // apply, even to a file of the same name.
   forget() {
+    this.items = [];
     this.graphs = [];
     this.views = {};
     this.dirs = {};
@@ -509,7 +510,7 @@ export default class Blueprint extends View {
     const meta = await readMeta(p.dir, p.path);
     if (p !== this.project) return;
     p.meta = meta;
-    for (const d of this.graphs) d.pinned = meta.pinned.includes(d.key);
+    this.setDiagrams(this.items ?? []); // pins, the tab order and closed tabs
     this.redraw(cx);
   }
 
@@ -521,25 +522,32 @@ export default class Blueprint extends View {
     // The project's big topic, if the agent wrote one (first line of topic.txt).
     const topic = (await readTextFile(`${p.dir}/topic.txt`))?.split("\n")[0].trim() || null;
     if (p !== this.project) return;
-    if (quiet && topic === p.topic && items.length === this.graphs.length && items.every((f) => this.graphs.some((d) => d.key === f.file && d.src === f.src))) return;
+    const was = this.items ?? [];
+    if (quiet && topic === p.topic && items.length === was.length && items.every((f) => was.some((o) => o.file === f.file && o.src === f.src))) return;
     p.topic = topic;
     this.setDiagrams(items);
     this.markSeen(cx);
     this.redraw(cx);
   }
 
-  // Files in a stable order (by name); a changed file gets a new rev, which
-  // re-measures it and starts its view from fit. The shown one stays shown,
-  // else the most recently updated one is.
-  setDiagrams(items) {
+  // Files in the project's tab order (by name until a tab is moved), less the
+  // closed ones; a changed file gets a new rev, which re-measures it and starts
+  // its view from fit. The shown one stays shown, else the most recently
+  // updated one is. Called again with the same files when only project.json
+  // changed.
+  setDiagrams(all) {
+    this.items = all;
+    const meta = this.project?.meta, closed = meta?.closed ?? {};
+    const items = all.filter((f) => !(f.file in closed && closed[f.file] === f.sum));
+    const order = ordered(meta?.order ?? [], items.map((f) => f.file));
     const before = new Map(this.graphs.map((d) => [d.key, d]));
     const shown = this.graphs[this.tab]?.key;
-    this.graphs = [...items].sort((a, b) => a.file.localeCompare(b.file)).map((f) => {
+    this.graphs = [...items].sort((a, b) => order.indexOf(a.file) - order.indexOf(b.file)).map((f) => {
       const old = before.get(f.file);
       const rev = old && old.src === f.src ? old.rev : ++this.revs;
       if (old && rev !== old.rev) delete this.views[f.file];
       const g = old && rev === old.rev ? old.g : parseFlowchart(f.src);
-      return { key: f.file, rev, src: f.src, g, tab: g.title ?? f.file.replace(/\.mmd$/, ""), loaded: f.mtime, pinned: f.pinned };
+      return { key: f.file, rev, src: f.src, g, tab: g.title ?? f.file.replace(/\.mmd$/, ""), loaded: f.mtime, pinned: meta ? meta.pinned.includes(f.file) : f.pinned };
     });
     const newest = items[0]?.file;
     const i = this.graphs.findIndex((d) => d.key === shown);
@@ -595,6 +603,30 @@ export default class Blueprint extends View {
         await this.saveMeta(p, (m) => (m.pinned = on ? [...new Set([...m.pinned, file])] : m.pinned.filter((f) => f !== file)));
       } catch (_) {}
     });
+  }
+
+  // Closing a tab hides its diagram rather than deleting it: project.json keeps
+  // the file's sum, and once the agent changes the file it is back (as a new
+  // file would be, shown). Its pin goes too, so the keeping rules clear it
+  // away in time. The tab to its right is shown next, else the one to its left.
+  closeTab(i, cx) {
+    const p = this.project, d = this.graphs[i], f = this.items?.find((x) => x.file === d?.key);
+    if (!p || !f) return;
+    if (i === this.tab) this.setTab(i + 1 < this.graphs.length ? i + 1 : i - 1, cx);
+    this.saveMeta(p, (m) => {
+      m.closed = { ...m.closed, [f.file]: f.sum };
+      m.pinned = m.pinned.filter((x) => x !== f.file);
+    }).catch(() => {}); // applied here at once, then on disk
+    this.setDiagrams(this.items);
+  }
+
+  // A tab dropped on another takes its place; the order is the project's, so
+  // the panel and a pane show the same one.
+  moveTab(from, to, cx) {
+    const p = this.project;
+    if (!p || from === to) return;
+    this.saveMeta(p, (m) => (m.order = moved(ordered(m.order ?? [], Object.keys(m.files ?? {})), from, to))).catch(() => {});
+    this.setDiagrams(this.items);
   }
 
   // Connect an agent to this project and ask it to draw.
@@ -986,6 +1018,7 @@ export default class Blueprint extends View {
     else if (c === "new") this.openCreate();
     else if (c === "pane") this.openPane();
     else if (c === "refresh" || c === "reload") this.refresh(cx);
+    else if (c === "close-tab") this.closeTab(this.tab, cx);
     else if (c === "lang-auto") {
       setShared(LANG_KEY, null);
       this.followLang?.(cx);
@@ -1300,6 +1333,7 @@ export default class Blueprint extends View {
         this.focus.focus();
         this.ownPane(cx);
       })
+      .on_mouse_up("left", () => (this.pressedTab = null)) // a tab let go of anywhere else
       .on_key_down((e, cx) => {
         // Shortcuts work with a Korean or Japanese input source on, too.
         const k = KEY_ALIASES[e.key_char] ?? KEY_ALIASES[e.key] ?? e.keystroke;
@@ -1387,22 +1421,49 @@ export default class Blueprint extends View {
     // ones narrow together (short ones keep their size), down to TAB_MIN.
     const age = G ? this.T.ago(minutesSince(G.loaded)) : "";
     const room = this.width - 20 - (p ? 32 : 0) - (this.asking() ? 96 : 0) - (G ? estimate(age, 11.5) + 16 : 0);
-    const natural = this.graphs.map((d) => estimate(d.tab, 12) + 22 + (d.pinned ? 16 : 0) + 4);
+    const natural = this.graphs.map((d, i) => estimate(d.tab, 12) + 22 + (d.pinned ? 16 : 0) + (p && i === this.tab ? 21 : 0) + 4);
     const tabMax = this.width > 0 ? tabCap(natural, room, TAB_MIN, TAB_MAX) : TAB_MAX;
+    // A tab pressed and let go over another moves there (as Herdr's own tabs
+    // do); let go over itself, it is shown (a press that began elsewhere, say
+    // dragging the drawing, does neither). The other tabs light up meanwhile.
+    // Middle click or × (on the shown tab) closes one. By file, not index: a
+    // close or move shifts the indexes before the release is handled.
+    const pressed = this.pressedTab;
+    const index = (key) => this.graphs.findIndex((x) => x.key === key);
     return h_flex().h(TABS_H).flex_none().px(10).gap(4).items_center().border_b(1).border_color(t.border).overflow_hidden()
+      .on_mouse_up("left", () => (this.pressedTab = null))
+      .on_mouse_down_out(() => (this.pressedTab = null))
       .children(this.graphs.map((d, i) => {
-        const on = i === this.tab;
+        const on = i === this.tab, target = !!pressed && pressed !== d.key;
         return h_flex().id(`bp-tab-${i}`).flex_none().max_w(tabMax).h(26).gap(5).px(10).items_center().rounded(6).text_size(12)
           .border_1().border_color(on ? t.input : t.border).tooltip(d.tab)
           .cursor_pointer().text_color(on ? t.foreground : t.muted)
           .when(on, (el) => el.bg(t.raised))
-          .when(!on, (el) => el.hover((s) => s.bg(t.hover).text_color(t.foreground)))
-          .on_click((_e, cx) => {
-            this.setTab(i, cx);
+          .when(!on || target, (el) => el.hover((s) => (target ? s.border_color(t.accent) : s.bg(t.hover).text_color(t.foreground))))
+          .on_mouse_down("left", (_e, cx) => {
+            this.pressedTab = d.key;
+            cx.notify();
+          })
+          .on_mouse_up("left", (_e, cx) => {
+            const from = this.pressedTab;
+            this.pressedTab = null;
+            if (from && from !== d.key) this.moveTab(from, d.key, cx);
+            else if (from) this.setTab(index(d.key), cx);
+            this.redraw(cx);
+          })
+          .on_mouse_down("middle", (_e, cx) => {
+            this.closeTab(index(d.key), cx);
             this.redraw(cx);
           })
           .when(d.pinned, (el) => el.child(svg("mods/blueprint/pin-on.svg").size(11).flex_none()))
-          .child(div().min_w(0).truncate().child(d.tab));
+          .child(div().min_w(0).truncate().child(d.tab))
+          .when(on && !!p, (el) => el.child(div().id("bp-close").flex_none().size(16).flex().items_center().justify_center()
+            .rounded(4).text_color(t.dim).tooltip(this.T.closeTip).hover((s) => s.bg(t.hover).text_color(t.foreground))
+            .on_click((_e, cx) => {
+              this.closeTab(index(d.key), cx);
+              this.redraw(cx);
+            })
+            .child(svg("mods/blueprint/close.svg").size(11))));
       }))
       .when(!!this.asking(), (el) => el.child(div().flex_none().px(10).py(4).rounded(6).text_size(12).text_color(t.dim)
         .border(1).border_color(t.border).child(this.T.drawingNew)))

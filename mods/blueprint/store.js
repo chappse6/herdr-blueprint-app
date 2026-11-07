@@ -4,7 +4,7 @@
 //   <app home>/data/blueprint/projects/<name>-<hash>/
 //     <diagram>.mmd   one Mermaid diagram each: the agent writes, Blueprint reads
 //     project.json    { path, agent, asked, pinned: [file], seen: { file: ms }, opened: ms,
-//                       files: { file: { sum, at } } }
+//                       files: { file: { sum, at } }, order: [file], closed: { file: sum } }
 //     topic.txt       the project's main topic, one line, written by the agent
 //
 // A project is a checkout: the git top level of the tab's terminal folder, so
@@ -69,7 +69,7 @@ function parseMeta(text, path) {
   try {
     saved = text ? JSON.parse(text) : null;
   } catch (_) {}
-  return { path, agent: null, pinned: [], seen: {}, files: {}, opened: 0, ...saved };
+  return { path, agent: null, pinned: [], seen: {}, files: {}, order: [], closed: {}, opened: 0, ...saved };
 }
 
 export async function readMeta(dir, path) {
@@ -124,14 +124,33 @@ async function listed(dir, meta, now) {
     if (src == null) continue;
     const sum = hash(src), was = meta.files?.[file];
     files[file] = was?.sum === sum ? was : { sum, at: now };
-    list.push({ file, src, mtime: files[file].at });
+    list.push({ file, src, sum, mtime: files[file].at });
   }
   return { list, files };
 }
 
+// The tab order: the files order lists, in that order, then the others by
+// name (a diagram seen for the first time goes to the right end).
+export const ordered = (order, names) =>
+  [...order.filter((f) => names.includes(f)), ...names.filter((f) => !order.includes(f)).sort((a, b) => a.localeCompare(b))];
+
+// order with from put where to is: after it when it came from the left, else
+// before it (a tab dropped on another takes its place).
+export function moved(order, from, to) {
+  const a = order.indexOf(from), b = order.indexOf(to);
+  if (a < 0 || b < 0 || a === b) return order;
+  const o = order.filter((f) => f !== from);
+  o.splice(o.indexOf(to) + (a < b ? 1 : 0), 0, from);
+  return o;
+}
+
+// A closed tab stays closed while its file has the text it was closed with.
+const stillClosed = (closed, files) => Object.fromEntries(Object.entries(closed ?? {}).filter(([f, sum]) => files[f]?.sum === sum));
+
 // The project's diagrams, oldest-touched ones deleted first. Each comes back
-// as { file, mtime, touched, pinned, src }, newest first. New or changed
-// files get their time recorded in project.json (and in meta).
+// as { file, mtime, touched, pinned, src, sum }, newest first. New or changed
+// files get their time recorded in project.json (and in meta), and their
+// place in the tab order.
 export async function load(dir, meta, now = Date.now()) {
   const { list: found, files } = await listed(dir, meta, now);
   const list = found
@@ -149,11 +168,16 @@ export async function load(dir, meta, now = Date.now()) {
       delete files[f.file];
     }
   }
-  const before = meta.files ?? {};
-  const changed = Object.keys(files).length !== Object.keys(before).length
-    || Object.entries(files).some(([f, r]) => before[f]?.sum !== r.sum);
-  meta.files = files;
-  if (changed) await updateMeta(dir, meta.path, (m) => (m.files = files)).catch(() => {});
+  const before = meta.files ?? {}, names = Object.keys(files);
+  const order = ordered(meta.order ?? [], names), closed = stillClosed(meta.closed, files);
+  const changed = names.length !== Object.keys(before).length
+    || Object.entries(files).some(([f, r]) => before[f]?.sum !== r.sum)
+    || order.join("/") !== (meta.order ?? []).join("/")
+    || Object.keys(closed).length !== Object.keys(meta.closed ?? {}).length;
+  Object.assign(meta, { files, order, closed });
+  if (changed) {
+    await updateMeta(dir, meta.path, (m) => Object.assign(m, { files, order: ordered(m.order ?? [], names), closed: stillClosed(m.closed, files) })).catch(() => {});
+  }
   return keep;
 }
 
