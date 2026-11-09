@@ -36,41 +36,21 @@ import { addButton, removeButton } from "./setup.js";
 import { newer, installedVersion, checkUpdate, setUpdateCheck, updatePrompt } from "./update.js";
 import { text, pickLang, KEY_ALIASES, LANGS } from "./i18n.js";
 
-// Herdr's zoom scales every px an element is given (w, left, text_size...), but
-// not path geometry, sizes from on_size_change, or pointer positions: those are
-// real px. The drawing works in layout px and converts at those borders with
-// this.zoom, read from settings() once per render, in canvas() (host calls are
-// the slow part of a render), and kept for the handlers in between.
+// Herdr's zoom scales every px an element is given (w, left, text_size...) and
+// paint_path geometry (coordinates, stroke widths, dashes), but not sizes from
+// on_size_change or pointer positions: those are real px. The drawing works in
+// layout px and divides what comes in by this.zoom, read from settings() once
+// per render, in canvas() (host calls are the slow part of a render), and kept
+// for the handlers in between. (Up to Herdr 0.1.11 paths were painted as real
+// px too, so Blueprint scaled them itself; on newer Herdr that drew edges at
+// zoom², short of their boxes.)
 const zoomOf = (s) => (Number(s?.zoom) > 0 ? Number(s.zoom) : 1);
 
-// PathBuilder with every coordinate, stroke width and dash in layout px. One
-// object per path, not a wrapper per call: a big diagram makes thousands.
-class ScaledPath {
-  constructor(b, k) {
-    this.b = b;
-    this.k = k;
-  }
-  move_to(x, y) { this.b = this.b.move_to(x * this.k, y * this.k); return this; }
-  line_to(x, y) { this.b = this.b.line_to(x * this.k, y * this.k); return this; }
-  cubic_bezier_to(x, y, ax, ay, bx, by) {
-    const k = this.k;
-    this.b = this.b.cubic_bezier_to(x * k, y * k, ax * k, ay * k, bx * k, by * k);
-    return this;
-  }
-  arc_to(rx, ry, rot, large, sweep, x, y) {
-    const k = this.k;
-    this.b = this.b.arc_to(rx * k, ry * k, rot, large, sweep, x * k, y * k);
-    return this;
-  }
-  add_polygon(pts, closed) { this.b = this.b.add_polygon(pts.map(([x, y]) => [x * this.k, y * this.k]), closed); return this; }
-  close() { this.b = this.b.close(); return this; }
-  dash_array(values) { this.b = this.b.dash_array(values.map((v) => v * this.k)); return this; }
-  build() { return this.b.build(); }
-}
-const zpaths = (k) => ({
-  fill: () => new ScaledPath(PathBuilder.fill(), k),
-  stroke: (width) => new ScaledPath(PathBuilder.stroke(width * k), k),
-});
+// Paths in layout px, as given: Herdr applies the zoom.
+const Path = {
+  fill: () => PathBuilder.fill(),
+  stroke: (width) => PathBuilder.stroke(width),
+};
 
 const MOD = "blueprint";
 const LANG_KEY = "blueprint.lang";
@@ -1664,7 +1644,6 @@ export default class Blueprint extends View {
     const X = (x) => x * z + v.x, Y = (y) => y * z + v.y;
     const sel = this.selected && g.nodes.has(this.selected) ? this.flow(L, this.selected) : null;
     const layer = (path, color) => div().absolute().left(0).top(0).w(W).h(H).child(window.paint_path(path, color));
-    const ZPath = zpaths(this.zoom);
     L.id ??= (this.layouts = (this.layouts ?? 0) + 1);
     // On screen, in drawing units, with room for strokes, badges and arrows.
     const m = 24 / z, x0 = -v.x / z - m, x1 = (W - v.x) / z + m, y0 = -v.y / z - m, y1 = (H - v.y) / z + m;
@@ -1675,7 +1654,7 @@ export default class Blueprint extends View {
 
     const nodes = [];
     L.nodes.forEach((item, k) => {
-      if (seen(reach.nodes[k]) && !late()) nodes.push(...this.node(item, t, pal, sel, X, Y, z, ZPath));
+      if (seen(reach.nodes[k]) && !late()) nodes.push(...this.node(item, t, pal, sel, X, Y, z));
     });
 
     // Dot grid over the whole canvas, moving with the drawing.
@@ -1685,7 +1664,7 @@ export default class Blueprint extends View {
     const dot = 1.6, ox = ((v.x % s) + s) % s, oy = ((v.y % s) + s) % s;
     const gridKey = [s, ox, oy, W, H, this.zoom].join(":");
     if (this.paths.grid?.key !== gridKey) {
-      let grid = ZPath.stroke(dot).dash_array([dot, s - dot]);
+      let grid = Path.stroke(dot).dash_array([dot, s - dot]);
       for (let y = oy; y < H; y += s) grid = grid.move_to(ox - dot / 2, y).line_to(W + s, y);
       this.paths.grid = { key: gridKey, path: grid.build() };
     }
@@ -1699,14 +1678,14 @@ export default class Blueprint extends View {
       const lines = new Map(), arrows = new Map();
       const lineGroup = (key, color, width, dash) => {
         if (!lines.has(key)) {
-          let b = ZPath.stroke(width);
+          let b = Path.stroke(width);
           if (dash) b = b.dash_array(dash.map((d) => d * Math.max(0.6, z)));
           lines.set(key, { b, color });
         }
         return lines.get(key);
       };
       const arrowGroup = (color) => {
-        if (!arrows.has(color)) arrows.set(color, { b: ZPath.fill(), color });
+        if (!arrows.has(color)) arrows.set(color, { b: Path.fill(), color });
         return arrows.get(color);
       };
       const colors = {
@@ -1875,7 +1854,7 @@ export default class Blueprint extends View {
     });
   }
 
-  node(item, t, pal, sel, X, Y, z, ZPath) {
+  node(item, t, pal, sel, X, Y, z) {
     const n = item.node, w = item.w * z, h = item.h * z;
     const left = X(item.x) - w / 2, top = Y(item.y) - h / 2;
     const lit = !sel || sel.nodes.has(n.id);
@@ -1917,14 +1896,14 @@ export default class Blueprint extends View {
     const i = bw / 2;
     if (n.shape === "diamond") {
       const poly = [[w / 2, i], [w - i, h / 2], [w / 2, h - i], [i, h / 2]];
-      box = box.child(full(shape("fill", () => ZPath.fill().add_polygon(poly, true)), bg))
-        .child(full(shape("line", () => ZPath.stroke(bw).add_polygon(poly, true)), stroke));
+      box = box.child(full(shape("fill", () => Path.fill().add_polygon(poly, true)), bg))
+        .child(full(shape("line", () => Path.stroke(bw).add_polygon(poly, true)), stroke));
     } else if (n.shape === "cylinder") {
       const rx = w / 2 - i, ry = 7 * z;
       const body = (b) => b.move_to(i, ry).arc_to(rx, ry - i, 0, false, true, w - i, ry).line_to(w - i, h - ry)
         .arc_to(rx, ry - i, 0, false, true, i, h - ry).close();
-      const outline = () => body(ZPath.stroke(bw)).move_to(i, ry).arc_to(rx, ry - i, 0, false, false, w - i, ry);
-      box = box.child(full(shape("fill", () => body(ZPath.fill())), bg)).child(full(shape("line", outline), stroke)).pt(ry);
+      const outline = () => body(Path.stroke(bw)).move_to(i, ry).arc_to(rx, ry - i, 0, false, false, w - i, ry);
+      box = box.child(full(shape("fill", () => body(Path.fill())), bg)).child(full(shape("line", outline), stroke)).pt(ry);
     } else {
       const r = n.shape === "stadium" ? h / 2 : n.shape === "circle" ? w / 2 : n.shape === "round" ? 14 * z : 8 * z;
       box = box.bg(bg).border(bw).border_color(stroke).rounded(r);

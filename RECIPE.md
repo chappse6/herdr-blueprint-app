@@ -68,7 +68,7 @@ With no diagram yet, a centred 440px card says "No diagram for this project yet"
 - Text sizes are measured with invisible elements (one tab per render) before layout; until then they are estimated (CJK characters count as wide).
 - `fs/promises` reads only inside the home folder (and writes only under the app folder): an app folder outside home (`HERDR_APP_HOME=/Users/Shared/...`) shows no diagrams. `readTextFile` reads anywhere.
 - A covered or locked window isn't redrawn, and `herdr-app shot` keeps returning its last frame: record demos with the window in front.
-- Herdr's `zoom` (settings.json, ⌘= / ⌘-) scales every px given to an element but not what crosses the other way: sizes from `on_size_change` (the canvas, the view's width, measured text), pointer positions and wheel deltas arrive in real px, and `paint_path` geometry is painted as real px. Keep everything in layout px: divide what comes in by the zoom, and multiply path coordinates, stroke widths and dashes by it. Read the zoom once per render (in `canvas()`), not per path.
+- Herdr's `zoom` (settings.json, ⌘= / ⌘-) scales every px given to an element and, on Herdr newer than 0.1.11 (seen on 0.1.14), `paint_path` geometry (coordinates, stroke widths, dashes), but not what crosses the other way: sizes from `on_size_change` (the canvas, the view's width, measured text), pointer positions and wheel deltas arrive in real px. Keep everything in layout px: divide what comes in by the zoom, and give paths layout px as they are (scaling them too draws edges at zoom², short of their boxes). Read the zoom once per render (in `canvas()`).
 - Not tested on Windows or Linux yet. PNG export is macOS only.
 
 ## Tests
