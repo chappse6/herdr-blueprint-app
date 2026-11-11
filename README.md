@@ -24,7 +24,7 @@ Blueprint is a mod for the [Herdr](https://herdr.dev) desktop app. Your agent dr
 - **Ask where you look.** Pick a box, press `E` and write what should change. The agent gets the box, its place in the code and your note.
 - **Kept out of your repo.** Diagrams live in Herdr's app folder, one set per project and worktree, and the ones nobody looks at go away after 7 days unless you pin them.
 
-**Requires the [Herdr desktop app](https://herdr.dev) 0.1.10 or newer · tested on macOS** (written for Windows and Linux too, not tried there yet).
+**Requires the [Herdr desktop app](https://herdr.dev) 0.1.12 or newer · tested on macOS** (written for Windows and Linux too, not tried there yet).
 
 ## Install
 
@@ -99,7 +99,7 @@ The Blueprint button (see Install) opens Blueprint as a side panel that follows 
 - **Where diagrams live.** `data/blueprint/projects/<name>-<hash>/` in Herdr's app folder: one `.mmd` file per diagram and a `project.json` for pins, tab order, closed tabs and the connected agent. A project is the git top level of the terminal's folder, so every worktree is its own.
 - **What it runs.** `git rev-parse` to find the project, `hc send` to reach the agent, and `sips` and `osascript` for PNG export on macOS. It reads `~/.claude/settings.json` for the language. The only network use is the update check below.
 - **Updates.** Once a day Blueprint reads the version in this repository's `mods/blueprint/mod.json` on GitHub. When it is newer than yours, a small Update button shows in the header (the version is in its tooltip); a click asks the tab's agent to update the mod and tell you what changed. `herdr-app do blueprint.update-check-off` stops the check.
-- **Platforms.** Written for macOS, Linux and Windows with no shell, Python or Node. It has been run on macOS (Herdr 0.1.10); Windows and Linux are not tested yet. PNG export is macOS only.
+- **Platforms.** Written for macOS, Linux and Windows with no shell, Python or Node. It has been run on macOS (Herdr 0.1.14); Windows and Linux are not tested yet. PNG export is macOS only.
 
 ## FAQ
 
