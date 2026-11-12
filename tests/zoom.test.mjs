@@ -1,5 +1,6 @@
-// Blueprint at Herdr zoom 1 and 1.2: what Herdr puts on screen (element px x
-// zoom, paths as given) must line up, and real px coming in must be divided.
+// Blueprint at Herdr zoom 1 and 1.2: what Herdr puts on screen (element px and
+// paint_path geometry x zoom, as Herdr does after 0.1.11) must line up, and real
+// px coming in must be divided.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { state } from "./herdr-stub.mjs";
@@ -37,7 +38,21 @@ function make(k) {
   return bp;
 }
 
-// What Herdr shows: element px times zoom, accumulated down the tree; paths as is.
+// A path as Herdr paints it: coordinates, stroke width and dashes times zoom.
+function zoomPath(p, k) {
+  const ops = p.ops.map((o) => {
+    switch (o[0]) {
+      case "M": case "L": return [o[0], o[1] * k, o[2] * k];
+      case "C": return [o[0], ...o.slice(1).map((v) => v * k)];
+      case "A": return [o[0], o[1] * k, o[2] * k, o[3], o[4], o[5], o[6] * k, o[7] * k];
+      case "P": return [o[0], o[1].map(([x, y]) => [x * k, y * k]), o[2]];
+      default: return o;
+    }
+  });
+  return { ...p, ops, width: p.width == null ? p.width : p.width * k, dash: p.dash && p.dash.map((d) => d * k) };
+}
+
+// What Herdr shows: element px times zoom, accumulated down the tree; paths times zoom.
 function screen(bp, k) {
   const els = bp.drawing(T, PAL);
   const boxes = new Map(), paths = [];
@@ -45,7 +60,7 @@ function screen(bp, k) {
     const ox = (top.props.left ?? 0) * k, oy = (top.props.top ?? 0) * k;
     const id = String(top.props.id ?? "");
     if (id.startsWith("bp-n-")) boxes.set(id.split("-").pop(), { x: ox, y: oy, w: top.props.w * k, h: top.props.h * k });
-    for (const e of flat(top)) if (e.path) paths.push({ ...e.path, ox, oy, id });
+    for (const e of flat(top)) if (e.path && typeof e.path === "object") paths.push({ ...zoomPath(e.path, k), ox, oy, id });
   }
   return { boxes, paths };
 }

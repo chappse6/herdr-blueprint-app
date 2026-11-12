@@ -16,7 +16,7 @@ Blueprint는 [Herdr](https://herdr.dev) 데스크톱 앱용 mod입니다. 에이
 - **보고 있는 곳에 요청.** 박스를 고르고 `E`를 눌러 바꿀 내용을 쓰면, 에이전트는 그 박스와 코드 위치, 메모를 함께 받습니다.
 - **저장소 밖에 보관.** 다이어그램은 Herdr 앱 폴더에 프로젝트와 worktree별로 쌓이고, 7일 동안 아무도 보지 않으면 지워집니다. 남기고 싶은 건 고정하면 됩니다.
 
-**필요한 것: [Herdr 데스크톱 앱](https://herdr.dev) 0.1.10 이상 · macOS에서 확인함** (Windows, Linux용으로도 만들었지만 아직 돌려 보지 못했습니다.)
+**필요한 것: [Herdr 데스크톱 앱](https://herdr.dev) 0.1.12 이상 · macOS에서 확인함** (Windows, Linux용으로도 만들었지만 아직 돌려 보지 못했습니다.)
 
 ## 설치
 
@@ -91,7 +91,7 @@ Blueprint 버튼(설치 참고)을 누르면 지금 보고 있는 탭을 따라�
 - **저장 위치.** Herdr 앱 폴더의 `data/blueprint/projects/<이름>-<해시>/`. 다이어그램 하나가 `.mmd` 파일 하나이고, 고정, 탭 순서, 닫은 탭, 연결한 에이전트는 `project.json`에 적힙니다. 프로젝트는 터미널 폴더의 git 최상위 폴더 기준이라 worktree마다 따로입니다.
 - **실행하는 것.** 프로젝트를 찾는 `git rev-parse`, 에이전트에게 입력하는 `hc send`, macOS에서 PNG를 만드는 `sips`와 `osascript`. 언어 설정 때문에 `~/.claude/settings.json`을 읽습니다. 네트워크는 아래 업데이트 확인에만 씁니다.
 - **업데이트.** 하루 한 번 GitHub에 있는 이 저장소의 `mods/blueprint/mod.json`에서 버전을 읽습니다. 설치한 것보다 새 버전이면 헤더에 작은 "Update" 버튼이 나타나고(버전은 툴팁에), 누르면 그 탭의 에이전트에게 mod 업데이트와 바뀐 점 설명을 맡깁니다. `herdr-app do blueprint.update-check-off`로 끌 수 있습니다.
-- **지원 환경.** 셸, Python, Node 없이 macOS, Linux, Windows에서 돌도록 만들었습니다. 실제로 돌려 본 곳은 macOS(Herdr 0.1.10)뿐이고 Windows와 Linux는 아직 확인하지 못했습니다. PNG 내보내기는 macOS에서만 됩니다.
+- **지원 환경.** 셸, Python, Node 없이 macOS, Linux, Windows에서 돌도록 만들었습니다. 실제로 돌려 본 곳은 macOS(Herdr 0.1.14)뿐이고 Windows와 Linux는 아직 확인하지 못했습니다. PNG 내보내기는 macOS에서만 됩니다.
 
 ## 자주 묻는 질문
 
